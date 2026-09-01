@@ -6,24 +6,20 @@
  * config files instead of hardcoding utilities — change a value once here and it
  * propagates everywhere.
  *
- * ── How this matches the `useTheme` (next-themes) library ──────────────────────
- * This project does NOT read theme values through React. Theming is done purely
- * in CSS: `next-themes`' `useTheme()` writes a class (`dark`, `ocean`, `forest`,
- * `sunset`) onto <html>, and `app/globals.css` redefines the Tailwind gray
- * palette variables (`--color-white`, `--color-gray-50 … --color-gray-950`)
- * inside each of those theme classes.
+ * ── Palette: light, Notion-like ───────────────────────────────────────────────
+ * The project commits to a single light palette built on soft, low-contrast
+ * neutrals — the Notion look: near-white surfaces, hairline borders, flat
+ * shadows, and colour used sparingly for meaning rather than decoration.
  *
- * Consequence:
- *   • Any utility built on the gray scale or white — `bg-gray-100`,
- *     `text-gray-600`, `border-gray-300`, `text-white`, `bg-background` … —
- *     AUTOMATICALLY re-colours when the user switches theme. No JS needed.
- *   • Fixed brand accents (blue / green / red below) are NOT overridden by the
- *     theme classes, so they stay constant across every theme — which is what
- *     you want for a recognisable brand colour.
+ *   • Neutrals  → the gray scale (grayLight / grayMid / grayStrong below)
+ *   • Primary   → blue   (colorMain)      — actions, focus, links
+ *   • Secondary → orange (colorSecondary) — highlights, selection, warnings
  *
- * So the rule used below:
- *   • Tokens that should follow the active theme  → expressed as gray-* / white.
- *   • Tokens that should stay constant (brand)    → expressed as blue/green/red.
+ * `next-themes` is still installed and `app/globals.css` still defines the
+ * `dark` / `ocean` / `forest` / `sunset` classes, but this palette is not tuned
+ * for them: the tokens below are chosen to look right in the default light
+ * theme. Nothing here reads a theme value through React — theming remains pure
+ * CSS.
  *
  * NOTE for Tailwind: all class names are written here as complete literal
  * strings (never built dynamically like `bg-${c}-500`) so Tailwind's source
@@ -40,8 +36,8 @@ export const paddingSmall = "px-3 py-1.5"; // compact controls
 export const paddingBig = "px-5 py-3"; // roomy controls
 
 /* ── Border & shadow ─────────────────────────────────────────────────────── */
-// Theme-adaptive default border (gray-300 follows the active theme).
-export const border = "border border-gray-300";
+// Notion borders are hairlines — one step lighter than the old gray-300.
+export const border = "border border-gray-200";
 export const shadow = "shadow-sm";
 
 /* ── Colour token shape ──────────────────────────────────────────────────────
@@ -63,61 +59,60 @@ export type ColorToken = {
   focusRing: string;
 };
 
-/** Main brand accent — blue. Constant across all themes. */
+/** Main brand accent — blue. Actions, focus rings, links. */
 export const colorMain: ColorToken = {
-  bg: "bg-blue-500",
-  bgHover: "hover:bg-blue-600",
-  bgActive: "active:bg-blue-700",
+  bg: "bg-blue-600",
+  bgHover: "hover:bg-blue-700",
+  bgActive: "active:bg-blue-800",
   text: "text-blue-600",
   border: "border-blue-500",
   ring: "focus-visible:ring-blue-500",
   focusBorder: "focus:border-blue-500",
-  focusRing: "focus:ring-2 focus:ring-blue-500/30",
+  focusRing: "focus:ring-2 focus:ring-blue-500/25",
 };
 
-/** Secondary brand accent — green. Constant across all themes. */
+/** Secondary brand accent — orange. Highlights, selection, soft warnings. */
 export const colorSecondary: ColorToken = {
-  bg: "bg-green-500",
-  bgHover: "hover:bg-green-600",
-  bgActive: "active:bg-green-700",
-  text: "text-green-600",
-  border: "border-green-500",
-  ring: "focus-visible:ring-green-500",
-  focusBorder: "focus:border-green-500",
-  focusRing: "focus:ring-2 focus:ring-green-500/30",
+  bg: "bg-orange-500",
+  bgHover: "hover:bg-orange-600",
+  bgActive: "active:bg-orange-700",
+  text: "text-orange-600",
+  border: "border-orange-500",
+  ring: "focus-visible:ring-orange-500",
+  focusBorder: "focus:border-orange-500",
+  focusRing: "focus:ring-2 focus:ring-orange-500/25",
 };
 
 /**
  * Colour of the "primaries" — the solid neutral fill used by primary/solid
- * buttons. Built on the gray scale, so it follows the active theme (e.g. a dark
- * fill in light mode becomes a light fill in dark mode, with readable text).
+ * buttons. Notion's committing action is near-black on white.
  */
 export const colorPrimaries: ColorToken = {
-  bg: "bg-gray-800",
-  bgHover: "hover:bg-gray-900",
+  bg: "bg-gray-900",
+  bgHover: "hover:bg-black",
   bgActive: "active:bg-black",
   text: "text-white",
-  border: "border-gray-800",
-  ring: "focus-visible:ring-gray-500",
+  border: "border-gray-900",
+  ring: "focus-visible:ring-gray-400",
   focusBorder: "focus:border-gray-700",
-  focusRing: "focus:ring-2 focus:ring-gray-500/30",
+  focusRing: "focus:ring-2 focus:ring-gray-400/30",
 };
 
-/** Global danger / red colour. Constant across all themes. */
+/** Global danger / red colour. */
 export const colorRed: ColorToken = {
   bg: "bg-red-600",
   bgHover: "hover:bg-red-700",
   bgActive: "active:bg-red-800",
   text: "text-red-600",
-  border: "border-red-400",
+  border: "border-red-300",
   ring: "focus-visible:ring-red-500",
   focusBorder: "focus:border-red-500",
-  focusRing: "focus:ring-2 focus:ring-red-500/30",
+  focusRing: "focus:ring-2 focus:ring-red-500/25",
 };
 
-/* ── Gray shades (3) — all follow the active next-themes theme ───────────────
- * grayLight  → surfaces / subtle fills      (gray-100)
- * grayMid    → borders / dividers           (gray-300)
+/* ── Gray shades (3) — the Notion neutral scale ──────────────────────────────
+ * grayLight  → surfaces / subtle fills      (gray-50)
+ * grayMid    → borders / dividers           (gray-200)
  * grayStrong → muted text / strong elements (gray-600)
  */
 export type GrayToken = {
@@ -130,21 +125,21 @@ export type GrayToken = {
 };
 
 export const grayLight: GrayToken = {
-  bg: "bg-gray-100",
-  bgHover: "hover:bg-gray-200",
-  bgActive: "active:bg-gray-300",
-  text: "text-gray-100",
-  border: "border-gray-100",
-  borderHover: "hover:border-gray-200",
+  bg: "bg-gray-50",
+  bgHover: "hover:bg-gray-100",
+  bgActive: "active:bg-gray-200",
+  text: "text-gray-50",
+  border: "border-gray-50",
+  borderHover: "hover:border-gray-100",
 };
 
 export const grayMid: GrayToken = {
-  bg: "bg-gray-300",
-  bgHover: "hover:bg-gray-400",
-  bgActive: "active:bg-gray-500",
-  text: "text-gray-300",
-  border: "border-gray-300",
-  borderHover: "hover:border-gray-400",
+  bg: "bg-gray-200",
+  bgHover: "hover:bg-gray-300",
+  bgActive: "active:bg-gray-400",
+  text: "text-gray-400",
+  border: "border-gray-200",
+  borderHover: "hover:border-gray-300",
 };
 
 export const grayStrong: GrayToken = {

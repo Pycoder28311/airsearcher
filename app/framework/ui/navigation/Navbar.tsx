@@ -95,9 +95,15 @@ export default function Navbar() {
                     component: link.megaMenu,
                   })}
                 >
-                  <Text value={link.label} size="small" />
+                  {/*
+                    Keyed because Button forwards these on as `props.children`
+                    into <Link>; once children travel through a prop React
+                    validates them as a dynamic list and wants keys.
+                  */}
+                  <Text key="label" value={link.label} size="small" />
                   {link.megaMenu && (
                     <Text
+                      key="chevron"
                       icon="chevron-down"
                       size="very small"
                       className={`text-gray-400 transition-transform ${activeMenu === link.label ? "rotate-180" : ""}`}
