@@ -14,15 +14,20 @@ import {
   candidateDates,
   planSearches,
   returnDateFor,
+  searchId,
   type PlannedSearch,
 } from "@/lib/airsearcher/queryPlan";
 import { costOf } from "@/lib/airsearcher/quota";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { findFreshByKey, saveSearch, type StoredSearch } from "@/lib/airsearcher/storage";
+import { poolFromRecords } from "@/lib/airsearcher/serpApi";
+import { poolKey } from "@/lib/airsearcher/grouping";
 import { cityById } from "@/data/places";
 import type {
   Arrangement,
+  FlightRecord,
   Itinerary,
+  NormalizedFlight,
   RoutingAllowance,
   SearchQuery,
 } from "@/lib/airsearcher/types";
@@ -117,30 +122,81 @@ export function buildAllArrangements(
  * Reuse is the whole point of the freshness threshold: an unchanged search
  * within the window costs zero SerpApi requests.
  */
-async function requestLivePool(
+/**
+ * Recovers per-route flight records from an itinerary pool.
+ *
+ * Only needed when the server sends a pool but no records. The itineraries are
+ * pairs, so the same flight appears many times over and is de-duplicated by id
+ * here. This is lossy — `buildItineraries` has already capped each direction —
+ * so it is a fallback, not the intended path.
+ */
+function recordsFromPool(
+  plan: PlannedSearch[],
+  pool: Record<string, Itinerary[]>,
+): FlightRecord[] {
+  return plan.map((search) => {
+    const itineraries = pool[poolKey(search.from, search.to, search.date)] ?? [];
+    const flights = new Map<string, NormalizedFlight>();
+
+    for (const itinerary of itineraries) {
+      const flight =
+        search.direction === "outbound" ? itinerary.outbound : itinerary.return;
+      if (flight) flights.set(flight.id, flight);
+    }
+
+    return {
+      id: searchId(search),
+      from: search.from,
+      to: search.to,
+      date: search.date,
+      direction: search.direction,
+      reason: search.reason,
+      flights: [...flights.values()],
+    };
+  });
+}
+
+/**
+ * Asks the server for the raw flights.
+ *
+ * Records are the wanted shape: they are what each request actually returned,
+ * and the pool rebuilds from them for free. A server that only sends a pool is
+ * still supported, with the records recovered from it as best they can be.
+ */
+async function requestFlightRecords(
   query: SearchQuery,
   allow: RoutingAllowance,
-): Promise<{ pool: Record<string, Itinerary[]>; requestCount: number }> {
+  plan: PlannedSearch[],
+): Promise<{ records: FlightRecord[]; requestCount: number }> {
   const response = await fetch("/api/airsearcher/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, allow }),
   });
   const data = (await response.json().catch(() => null)) as {
+    records?: FlightRecord[];
     pool?: Record<string, Itinerary[]>;
     requestCount?: number;
     requestsMade?: number;
     error?: string;
   } | null;
 
-  if (!response.ok || !data?.pool || typeof data.requestCount !== "number") {
+  const failed =
+    !response.ok ||
+    typeof data?.requestCount !== "number" ||
+    (!data.records && !data.pool);
+
+  if (failed) {
     throw new SearchRequestError(
       data?.error ?? "The live flight search failed.",
       typeof data?.requestsMade === "number" ? data.requestsMade : 0,
     );
   }
 
-  return { pool: data.pool, requestCount: data.requestCount };
+  return {
+    records: data!.records ?? recordsFromPool(plan, data!.pool ?? {}),
+    requestCount: data!.requestCount!,
+  };
 }
 
 export async function runSearch(
@@ -159,8 +215,9 @@ export async function runSearch(
     weights: weightsOf(filters),
   };
 
-  const expectedCount = costOf(planSearches(query, allow));
-  const live = await requestLivePool(query, allow);
+  const plan = planSearches(query, allow);
+  const expectedCount = costOf(plan);
+  const live = await requestFlightRecords(query, allow, plan);
   if (live.requestCount !== expectedCount) {
     throw new SearchRequestError(
       `The server made ${live.requestCount} requests, but ${expectedCount} were confirmed.`,
@@ -168,8 +225,12 @@ export async function runSearch(
     );
   }
 
+  // The pool is derived, never stored: it is the cartesian product of the
+  // records and rebuilds from them whenever it is needed.
+  const pool = poolFromRecords(live.records);
+
   const arrangements = sortArrangements(
-    buildAllArrangements(query, withWeights, live.pool, allow),
+    buildAllArrangements(query, withWeights, pool, allow),
     "score",
   );
 
@@ -180,6 +241,7 @@ export async function runSearch(
     key,
     query,
     arrangements,
+    records: live.records,
   };
 
   saveSearch(entry);

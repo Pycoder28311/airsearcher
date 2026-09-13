@@ -13,6 +13,8 @@ import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { formatAge, formatDate } from "@/lib/airsearcher/time";
 import { isStale, type StoredSearch } from "@/lib/airsearcher/storage";
 import { cityById } from "@/data/places";
+import { useState } from "react";
+import FlightDataDialog from "./FlightDataDialog";
 
 /**
  * One past search, matching the Penpot history card: destination, dates, the
@@ -31,8 +33,15 @@ export default function SearchHistoryCard({
   onOpen: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
+  const [dataOpen, setDataOpen] = useState(false);
+
   const stale = isStale(entry, now);
   const city = cityById(entry.query.destination.cityId);
+
+  const gathered = (entry.records ?? []).reduce(
+    (sum, record) => sum + record.flights.length,
+    0,
+  );
 
   const dates =
     entry.query.dateMode === "exact"
@@ -83,15 +92,37 @@ export default function SearchHistoryCard({
         className={stale ? colorSecondary.text : "text-gray-400"}
       />
 
-      <div className="mt-1 flex items-center justify-between gap-2">
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
         <Button styleType="underline" onClick={() => onOpen(entry.id)}>
           <Text size="small" value="See more" icon="arrow-right" iconPosition="right" />
         </Button>
-        <Button styleType="delete" onClick={() => onRemove(entry.id)} className="h-8 w-8 p-0!">
-          <Text icon="trash" size="very small" />
-          <span className="sr-only">Delete this search</span>
-        </Button>
+
+        <div className="flex items-center gap-2">
+          <Button
+            styleType="tertiary"
+            disabled={gathered === 0}
+            onClick={() => setDataOpen(true)}
+          >
+            <Text
+              size="very small"
+              value={gathered === 0 ? "No raw data" : `See data · ${gathered}`}
+            />
+          </Button>
+          <Button styleType="delete" onClick={() => onRemove(entry.id)} className="h-8 w-8 p-0!">
+            <Text icon="trash" size="very small" />
+            <span className="sr-only">Delete this search</span>
+          </Button>
+        </div>
       </div>
+
+      <FlightDataDialog
+        // Remounting on open keeps the dialog's scroll position from leaking
+        // between the cards that share this component.
+        key={dataOpen ? "data-open" : "data-closed"}
+        entry={entry}
+        open={dataOpen}
+        onClose={() => setDataOpen(false)}
+      />
     </article>
   );
 }

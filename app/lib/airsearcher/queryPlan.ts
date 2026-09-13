@@ -23,7 +23,8 @@ import type {
 } from "@/lib/airsearcher/types";
 
 /** Why a search is in the plan — shown in the cost breakdown. */
-export type SearchReason = "main" | "feeder" | "direct";
+export type { SearchReason } from "@/lib/airsearcher/types";
+import type { SearchReason } from "@/lib/airsearcher/types";
 
 export interface PlannedSearch {
   from: AirportCode;

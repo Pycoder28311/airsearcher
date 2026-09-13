@@ -21,7 +21,11 @@ import {
   DEFAULT_FILTERS,
   type FilterState,
 } from "@/lib/airsearcher/config/filters";
-import type { Arrangement, SearchQuery } from "@/lib/airsearcher/types";
+import type {
+  Arrangement,
+  FlightRecord,
+  SearchQuery,
+} from "@/lib/airsearcher/types";
 
 const SEARCHES_KEY = "airsearcher:searches:v1";
 const FILTERS_KEY = "airsearcher:filters:v1";
@@ -36,6 +40,14 @@ export interface StoredSearch {
   key: string;
   query: SearchQuery;
   arrangements: Arrangement[];
+  /**
+   * Every flight the search gathered, one record per route.
+   *
+   * Best-effort: if the browser refuses the write because it is too large, the
+   * entry is saved without it rather than lost. Absent on entries saved before
+   * raw data was kept, so always treat it as optional.
+   */
+  records?: FlightRecord[];
 }
 
 /** Ranking preferences plus the calendar's date rules, stored together. */
@@ -76,13 +88,16 @@ function readJson(key: string): unknown {
   }
 }
 
-function writeJson(key: string, value: unknown): void {
+/** Returns false when the write did not happen, so callers can shed weight. */
+function writeJson(key: string, value: unknown): boolean {
   const storage = getStorage();
-  if (!storage) return;
+  if (!storage) return false;
   try {
     storage.setItem(key, JSON.stringify(value));
+    return true;
   } catch {
-    // Quota exceeded or storage blocked — losing a cache write is acceptable.
+    // Quota exceeded or storage blocked.
+    return false;
   }
 }
 
@@ -110,11 +125,31 @@ export function loadSearches(): StoredSearch[] {
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
 
-/** Adds or replaces an entry, keeping at most MAX_SAVED_SEARCHES. */
+/**
+ * Adds or replaces an entry, keeping at most MAX_SAVED_SEARCHES.
+ *
+ * The raw flight records are far bulkier than the arrangements, so when the
+ * browser refuses the write they are shed in stages rather than losing the
+ * search: first from the older entries, then from this one. The arrangements
+ * always survive, because they are what the results page needs.
+ */
 export function saveSearch(entry: StoredSearch): void {
   const existing = loadSearches().filter((e) => e.id !== entry.id);
   const next = [entry, ...existing].slice(0, MAX_SAVED_SEARCHES);
-  writeJson(SEARCHES_KEY, next);
+
+  if (writeJson(SEARCHES_KEY, next)) return;
+
+  // Keep the newest search's raw data, drop everyone else's.
+  const slimOthers = next.map((e, index) =>
+    index === 0 ? e : { ...e, records: undefined },
+  );
+  if (writeJson(SEARCHES_KEY, slimOthers)) return;
+
+  // Still too big: keep the arrangements, lose the raw data entirely.
+  writeJson(
+    SEARCHES_KEY,
+    next.map((e) => ({ ...e, records: undefined })),
+  );
 }
 
 export function removeSearch(id: string): void {

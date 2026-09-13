@@ -194,3 +194,35 @@ export interface RoutingAllowance {
   direct: boolean;
   gather: boolean;
 }
+
+/* ── Raw gathered data ──────────────────────────────────────────────────── */
+
+/**
+ * Why a search was made — carried through to the stored data so the history can
+ * say what each bucket of flights was for.
+ *
+ * Defined here rather than in `queryPlan` so the stored shapes do not depend on
+ * the planner.
+ */
+export type SearchReason = "main" | "feeder" | "direct";
+
+/**
+ * Everything one search returned for one route, before any pairing, filtering
+ * or ranking.
+ *
+ * One record is one billable request's worth of flights for a single route, so
+ * the raw data can be read back exactly as it arrived. Flights are stored, not
+ * itineraries: an itinerary pool is the cartesian product of outbound and
+ * return flights (up to 40 x 40 per route), so persisting it would explode,
+ * while itineraries rebuild from flights for free.
+ */
+export interface FlightRecord {
+  /** `${from}-${to}-${date}-${direction}`. */
+  id: string;
+  from: AirportCode;
+  to: AirportCode;
+  date: string;
+  direction: "outbound" | "return";
+  reason: SearchReason;
+  flights: NormalizedFlight[];
+}

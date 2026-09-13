@@ -23,8 +23,10 @@ import {
 } from "@/lib/airsearcher/queryPlan";
 import { costOf, explainCost } from "@/lib/airsearcher/quota";
 import {
+  flightRecordsFromResponses,
   livePoolFromResponses,
   normalizeSerpApiResponse,
+  poolFromRecords,
 } from "@/lib/airsearcher/serpApi";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/storage";
@@ -226,6 +228,39 @@ check("SerpApi flight JSON is normalized and paired into the live pool", () => {
 
   assert.equal(pool[poolKey("ATH", "BER", "2026-09-14")].length, 1);
   assert.equal(pool[poolKey("ATH", "BER", "2026-09-14")][0].totalPrice, 160);
+});
+
+check("raw flight records are kept per route, and the pool rebuilds from them", () => {
+  const plan = planSearches(QUERY);
+  const batches = planRequestBatches(plan);
+  const outbound = batches.find((batch) => batch.direction === "outbound")!;
+  const returning = batches.find((batch) => batch.direction === "return")!;
+  const responses = [
+    { batch: outbound, data: serpApiFixture("ATH", "BER", "2026-09-14", 90) },
+    { batch: returning, data: serpApiFixture("BER", "ATH", "2026-09-21", 70) },
+  ];
+
+  const records = flightRecordsFromResponses(plan, responses);
+
+  // One record per planned search — the raw data is never merged or dropped.
+  assert.equal(records.length, plan.length);
+  for (const record of records) {
+    assert.equal(record.id, `${record.from}-${record.to}-${record.date}-${record.direction}`);
+  }
+
+  // A flight is attributed to its own route, not to every route in the batch.
+  const outboundRecord = records.find(
+    (r) => r.from === "ATH" && r.to === "BER" && r.direction === "outbound",
+  )!;
+  assert.equal(outboundRecord.flights.length, 1);
+  assert.equal(outboundRecord.flights[0].price, 90);
+  assert.equal(outboundRecord.reason, "main");
+
+  const feeder = records.find((r) => r.from === "SKG" && r.to === "ATH")!;
+  assert.equal(feeder.flights.length, 0, "SKG had no flights in this fixture");
+
+  // Storing records loses nothing: the pool is identical either way.
+  assert.deepEqual(poolFromRecords(records), livePoolFromResponses(plan, responses));
 });
 
 check("planSearches drops the feeder searches when nobody may gather", () => {

@@ -9,6 +9,7 @@ import {
 } from "@/lib/airsearcher/queryPlan";
 import type {
   AirportCode,
+  FlightRecord,
   Itinerary,
   NormalizedEndpoint,
   NormalizedFlight,
@@ -150,11 +151,21 @@ export function normalizeSerpApiResponse(data: unknown): NormalizedFlight[] {
   return normalized;
 }
 
-/** Builds the existing route-keyed itinerary pool from all real API batches. */
-export function livePoolFromResponses(
+/**
+ * Splits the merged batch responses back into one record per planned route.
+ *
+ * A single request can carry several routes at once (the comma-separated
+ * `departure_id` / `arrival_id` batching), so every flight is attributed to a
+ * route by its own first departure and last arrival airport. Anything that
+ * matches no planned route is dropped rather than guessed at.
+ *
+ * This is the raw data, exactly as it arrived: no pairing, no filtering, no
+ * ranking. Everything downstream is derived from it.
+ */
+export function flightRecordsFromResponses(
   plan: PlannedSearch[],
   responses: SerpApiBatchResponse[],
-): Record<string, Itinerary[]> {
+): FlightRecord[] {
   const flightsBySearch = new Map<string, NormalizedFlight[]>();
 
   for (const { batch, data } of responses) {
@@ -170,6 +181,7 @@ export function livePoolFromResponses(
 
       const route = routes.find((search) => search.from === from && search.to === to);
       if (!route) continue;
+
       const id = searchId(route);
       const current = flightsBySearch.get(id) ?? [];
       if (!current.some((existing) => existing.id === flight.id)) current.push(flight);
@@ -177,21 +189,46 @@ export function livePoolFromResponses(
     }
   }
 
-  const returning = plan.filter((search) => search.direction === "return");
+  return plan.map((search) => ({
+    id: searchId(search),
+    from: search.from,
+    to: search.to,
+    date: search.date,
+    direction: search.direction,
+    reason: search.reason,
+    flights: flightsBySearch.get(searchId(search)) ?? [],
+  }));
+}
+
+/**
+ * Rebuilds the route-keyed itinerary pool from stored records.
+ *
+ * Pairing an outbound route with its reverse is all that separates raw flights
+ * from itineraries, so the pool never has to be stored — it is regenerated from
+ * the records whenever it is needed.
+ */
+export function poolFromRecords(records: FlightRecord[]): Record<string, Itinerary[]> {
+  const returning = records.filter((record) => record.direction === "return");
   const pool: Record<string, Itinerary[]> = {};
 
-  for (const outbound of plan.filter((search) => search.direction === "outbound")) {
+  for (const outbound of records.filter((record) => record.direction === "outbound")) {
     const back = returning.find(
-      (search) => search.from === outbound.to && search.to === outbound.from,
+      (record) => record.from === outbound.to && record.to === outbound.from,
     );
-    const outgoingFlights = flightsBySearch.get(searchId(outbound)) ?? [];
-    const returnFlights = back ? flightsBySearch.get(searchId(back)) ?? [] : null;
     pool[poolKey(outbound.from, outbound.to, outbound.date)] = buildItineraries(
-      outgoingFlights,
-      returnFlights,
+      outbound.flights,
+      back ? back.flights : null,
       DEFAULT_RESULT_LIMITS,
     );
   }
 
   return pool;
+}
+
+/** Builds the route-keyed itinerary pool straight from the API batches. */
+export function livePoolFromResponses(
+  plan: PlannedSearch[],
+  responses: SerpApiBatchResponse[],
+): Record<string, Itinerary[]> {
+  return poolFromRecords(flightRecordsFromResponses(plan, responses));
 }

@@ -3,7 +3,7 @@ import {
   planRequestBatches,
   planSearches,
 } from "@/lib/airsearcher/queryPlan";
-import { livePoolFromResponses } from "@/lib/airsearcher/serpApi";
+import { flightRecordsFromResponses } from "@/lib/airsearcher/serpApi";
 import type { RoutingAllowance, SearchQuery } from "@/lib/airsearcher/types";
 
 export const runtime = "nodejs";
@@ -132,8 +132,11 @@ export async function POST(request: Request) {
     responses.push({ batch, data });
   }
 
+  // Records rather than a pool: this is the raw data each request returned, and
+  // the client derives the itinerary pool from it. Sending it this way is both
+  // smaller on the wire and the only shape that can be stored without loss.
   return Response.json({
-    pool: livePoolFromResponses(plan, responses),
+    records: flightRecordsFromResponses(plan, responses),
     requestCount: requestsMade,
   });
 }
