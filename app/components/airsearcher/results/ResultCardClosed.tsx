@@ -5,7 +5,7 @@ import { colorMain, grayMid, radius } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { describeRouting } from "@/lib/airsearcher/grouping";
 import { formatClock, formatDate, formatDuration } from "@/lib/airsearcher/time";
-import type { Arrangement, GroupLeg } from "@/lib/airsearcher/types";
+import { journeyFlights, type Arrangement, type GroupLeg } from "@/lib/airsearcher/types";
 
 /** The DEP / RET summary block of the Penpot closed card. */
 function DirectionSummary({
@@ -19,37 +19,35 @@ function DirectionSummary({
   direction: "outbound" | "return";
   date: string | null;
 }) {
-  const flights = legs
-    .map((leg) => (direction === "outbound" ? leg.main.outbound : leg.main.return))
-    .filter((flight) => flight !== null);
+  const journeys = legs
+    .map((leg) => (direction === "outbound" ? leg.outbound : leg.return))
+    .filter((journey) => journey !== null);
 
-  if (flights.length === 0) return null;
+  if (journeys.length === 0) return null;
 
-  const airlines = [...new Set(flights.map((f) => f.airline.name).filter(Boolean))];
+  const flown = journeys.map(journeyFlights);
+  const airlines = [
+    ...new Set(flown.flat().map((f) => f.airline.name).filter(Boolean)),
+  ];
 
-  // "SKG → ATH → BER" for a gathering group, "ATH → BER" for a direct one,
-  // reversed on the return so it reads in the order it is flown.
+  // Each group's journey in the order it is flown: "SKG → ATH → BER" going out
+  // via the hub, "BER → ATH → SKG" coming back the same way.
   const routes = [
     ...new Set(
-      legs.map((leg) => {
-        const main = direction === "outbound" ? leg.main.outbound : leg.main.return;
-        if (!main) return "";
-        const segments = main.outbound.segments;
-        const start = segments[0]?.departure.airport ?? leg.origin;
-        const finish = segments[segments.length - 1]?.arrival.airport ?? "";
-        const hop = leg.feeder ? leg.origin : null;
-        const stops =
-          direction === "outbound"
-            ? [hop, start, finish]
-            : [finish, start, hop];
+      flown.map((flights) => {
+        const stops = [
+          flights[0].outbound.segments[0]?.departure.airport,
+          ...flights.map((f) => f.outbound.segments[f.outbound.segments.length - 1]?.arrival.airport),
+        ];
         return stops.filter(Boolean).join(" → ");
       }),
     ),
   ].filter(Boolean);
 
-  const first = flights[0];
-  const firstSegment = first.outbound.segments[0];
-  const lastSegment = first.outbound.segments[first.outbound.segments.length - 1];
+  const first = flown[0];
+  const firstSegment = first[0].outbound.segments[0];
+  const lastFlight = first[first.length - 1];
+  const lastSegment = lastFlight.outbound.segments[lastFlight.outbound.segments.length - 1];
 
   return (
     <div className={`flex min-w-0 flex-1 flex-col gap-1 ${radius} p-2`}>

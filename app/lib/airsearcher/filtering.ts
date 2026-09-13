@@ -6,12 +6,12 @@
  * Nothing here fetches, so every filter is free.
  *
  * Ported from the reference project, with one addition: every predicate takes a
- * `FilterScope`, so a filter can be pointed at the going flight, the returning
- * flight, or both. An arrangement passes only when every itinerary in it — every
- * origin group's feeder and main flight — passes.
+ * `FilterScope`, so a filter can be pointed at the going flights, the returning
+ * flights, or both. An arrangement passes only when every origin group's
+ * flights — feeders included, in both directions — pass.
  */
 
-import { legsOf, type Arrangement, type Itinerary, type NormalizedFlight } from "@/lib/airsearcher/types";
+import { journeyFlights, type Arrangement, type NormalizedFlight } from "@/lib/airsearcher/types";
 import { parseFlightHour } from "@/lib/airsearcher/ranking";
 import type {
   FilterScope,
@@ -22,28 +22,32 @@ import type {
 
 /* ── Scope ───────────────────────────────────────────────────────────────── */
 
-/**
- * The flights a scoped filter looks at. "going" is the outbound flight,
- * "returning" the return; on a one-way itinerary both non-"going" scopes still
- * fall back to what exists, so a scope can never silently match nothing.
- */
-export function flightsInScope(
-  itinerary: Itinerary,
-  scope: FilterScope,
-): NormalizedFlight[] {
-  if (scope === "going") return [itinerary.outbound];
-  if (scope === "returning") return itinerary.return ? [itinerary.return] : [];
-  return legsOf(itinerary);
+/** The flights one origin group takes, split by direction. */
+export interface LegFlightSet {
+  going: NormalizedFlight[];
+  returning: NormalizedFlight[];
 }
 
-/** Every itinerary an arrangement is built from: each leg's feeder and main. */
-export function itinerariesOf(arrangement: Arrangement): Itinerary[] {
-  const list: Itinerary[] = [];
-  for (const leg of arrangement.legs) {
-    if (leg.feeder) list.push(leg.feeder);
-    list.push(leg.main);
-  }
-  return list;
+/**
+ * The flights a scoped filter looks at. "going" is every flight out, feeder
+ * included, "returning" every flight back; a one-way trip has no returning
+ * flights, so a "returning" filter matches it trivially.
+ */
+export function flightsInScope(
+  set: LegFlightSet,
+  scope: FilterScope,
+): NormalizedFlight[] {
+  if (scope === "going") return set.going;
+  if (scope === "returning") return set.returning;
+  return [...set.going, ...set.returning];
+}
+
+/** One flight set per origin group in the arrangement. */
+export function flightSetsOf(arrangement: Arrangement): LegFlightSet[] {
+  return arrangement.legs.map((leg) => ({
+    going: journeyFlights(leg.outbound),
+    returning: leg.return ? journeyFlights(leg.return) : [],
+  }));
 }
 
 /* ── Predicates, one per filter ──────────────────────────────────────────── */
@@ -58,22 +62,14 @@ export function stopBucket(stops: number): StopOption {
 
 /** Every in-scope flight must fall in one of the selected buckets. */
 export function matchesStops(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   selected: StopOption[],
   scope: FilterScope = "both",
 ): boolean {
   if (selected.length === 0) return true;
-  return flightsInScope(itinerary, scope).every((flight) =>
+  return flightsInScope(set, scope).every((flight) =>
     selected.includes(stopBucket(flight.outbound.stops)),
   );
-}
-
-export function matchesPrice(
-  itinerary: Itinerary,
-  range: [number, number] | null,
-): boolean {
-  if (range === null) return true;
-  return itinerary.totalPrice >= range[0] && itinerary.totalPrice <= range[1];
 }
 
 /**
@@ -81,13 +77,13 @@ export function matchesPrice(
  * Exclude: none is.
  */
 export function matchesAirlines(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   mode: "include" | "exclude",
   selected: string[],
   scope: FilterScope = "both",
 ): boolean {
   if (selected.length === 0) return true;
-  const names = flightsInScope(itinerary, scope).map((f) => f.airline.name);
+  const names = flightsInScope(set, scope).map((f) => f.airline.name);
   const hit = names.some((n) => n !== null && selected.includes(n));
   return mode === "include" ? hit : !hit;
 }
@@ -123,12 +119,12 @@ export function matchesTimeWindow(
 
 /** Every in-scope flight must be within the limit. */
 export function matchesMaxDuration(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   maxMinutes: number | null,
   scope: FilterScope = "both",
 ): boolean {
   if (maxMinutes === null) return true;
-  return flightsInScope(itinerary, scope).every((flight) => {
+  return flightsInScope(set, scope).every((flight) => {
     const total = flight.outbound.totalDurationMinutes;
     return total === null || total <= maxMinutes;
   });
@@ -136,12 +132,12 @@ export function matchesMaxDuration(
 
 /** Every layover on every in-scope flight must sit inside the range. */
 export function matchesLayover(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   range: [number, number] | null,
   scope: FilterScope = "both",
 ): boolean {
   if (range === null) return true;
-  return flightsInScope(itinerary, scope).every((flight) =>
+  return flightsInScope(set, scope).every((flight) =>
     flight.outbound.layovers.every((l) => {
       if (l.durationMinutes === null) return true;
       return l.durationMinutes >= range[0] && l.durationMinutes <= range[1];
@@ -149,13 +145,13 @@ export function matchesLayover(
   );
 }
 
-/** Airports an itinerary connects through, excluding origin and destination. */
+/** Airports a group connects through, excluding origin and destination. */
 export function connectingAirports(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   scope: FilterScope = "both",
 ): string[] {
   const codes = new Set<string>();
-  for (const flight of flightsInScope(itinerary, scope)) {
+  for (const flight of flightsInScope(set, scope)) {
     for (const l of flight.outbound.layovers) {
       if (l.airport) codes.add(l.airport);
     }
@@ -170,13 +166,13 @@ export function connectingAirports(
 }
 
 export function avoidsAirports(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   excluded: string[],
   scope: FilterScope = "both",
 ): boolean {
   if (excluded.length === 0) return true;
   const upper = excluded.map((c) => c.toUpperCase());
-  return !connectingAirports(itinerary, scope).some((code) =>
+  return !connectingAirports(set, scope).some((code) =>
     upper.includes(code.toUpperCase()),
   );
 }
@@ -190,12 +186,12 @@ const TRAVEL_CLASS_LABELS: Record<string, string> = {
 
 /** Every segment of every in-scope flight must be in the requested cabin. */
 export function matchesTravelClass(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   travelClass: string,
   scope: FilterScope = "both",
 ): boolean {
   const wanted = TRAVEL_CLASS_LABELS[travelClass] ?? travelClass;
-  return flightsInScope(itinerary, scope).every((flight) =>
+  return flightsInScope(set, scope).every((flight) =>
     flight.outbound.segments.every((s) => {
       if (!s.travelClass) return true;
       return s.travelClass.toLowerCase() === wanted;
@@ -205,11 +201,11 @@ export function matchesTravelClass(
 
 /** At or below what is typical for the route, on every flight. */
 export function matchesEmissions(
-  itinerary: Itinerary,
+  set: LegFlightSet,
   lessOnly: boolean,
 ): boolean {
   if (!lessOnly) return true;
-  return legsOf(itinerary).every((flight) => {
+  return flightsInScope(set, "both").every((flight) => {
     const diff = flight.carbonDifferencePercent;
     return diff === null || diff <= 0;
   });
@@ -229,75 +225,75 @@ export type FilterGroupKey =
   | "travelClass"
   | "emissions";
 
-function itineraryPasses(
-  itinerary: Itinerary,
+function flightSetPasses(
+  set: LegFlightSet,
   filters: FilterState,
   skip?: FilterGroupKey,
 ): boolean {
   const s = filters.scopes;
 
   // Price is deliberately absent: it is judged once on the group total in
-  // `arrangementPasses`, never per itinerary.
-  if (skip !== "stops" && !matchesStops(itinerary, filters.stops, s.stops)) {
+  // `arrangementPasses`, never per group.
+  if (skip !== "stops" && !matchesStops(set, filters.stops, s.stops)) {
     return false;
   }
   if (
     skip !== "airlines" &&
-    !matchesAirlines(itinerary, filters.airlineMode, filters.airlines, s.airlines)
+    !matchesAirlines(set, filters.airlineMode, filters.airlines, s.airlines)
   ) {
     return false;
   }
   if (skip !== "times") {
     const going = s.times !== "returning";
     const returning = s.times !== "going";
-    if (going) {
-      if (!matchesTimeWindow(itinerary.outbound, filters.outboundWindow, "departure")) {
-        return false;
-      }
-      if (
-        !matchesTimeWindow(itinerary.outbound, filters.outboundArrivalWindow, "arrival")
-      ) {
-        return false;
-      }
+    if (
+      going &&
+      !set.going.every(
+        (flight) =>
+          matchesTimeWindow(flight, filters.outboundWindow, "departure") &&
+          matchesTimeWindow(flight, filters.outboundArrivalWindow, "arrival"),
+      )
+    ) {
+      return false;
     }
-    if (returning) {
-      if (!matchesTimeWindow(itinerary.return, filters.returnWindow, "departure")) {
-        return false;
-      }
-      if (
-        !matchesTimeWindow(itinerary.return, filters.returnArrivalWindow, "arrival")
-      ) {
-        return false;
-      }
+    if (
+      returning &&
+      !set.returning.every(
+        (flight) =>
+          matchesTimeWindow(flight, filters.returnWindow, "departure") &&
+          matchesTimeWindow(flight, filters.returnArrivalWindow, "arrival"),
+      )
+    ) {
+      return false;
     }
   }
   if (
     skip !== "duration" &&
-    !matchesMaxDuration(itinerary, filters.maxDurationMinutes, s.duration)
+    !matchesMaxDuration(set, filters.maxDurationMinutes, s.duration)
   ) {
     return false;
   }
   if (
     skip !== "layover" &&
-    !matchesLayover(itinerary, filters.layoverRange, s.duration)
+    !matchesLayover(set, filters.layoverRange, s.duration)
   ) {
     return false;
   }
   if (
     skip !== "airports" &&
-    !avoidsAirports(itinerary, filters.excludeAirports, s.avoidAirports)
+    !avoidsAirports(set, filters.excludeAirports, s.avoidAirports)
   ) {
     return false;
   }
   if (
     skip !== "travelClass" &&
-    !matchesTravelClass(itinerary, filters.travelClass, s.cabin)
+    !matchesTravelClass(set, filters.travelClass, s.cabin)
   ) {
     return false;
   }
   if (
     skip !== "emissions" &&
-    !matchesEmissions(itinerary, filters.lessEmissionsOnly)
+    !matchesEmissions(set, filters.lessEmissionsOnly)
   ) {
     return false;
   }
@@ -305,8 +301,8 @@ function itineraryPasses(
 }
 
 /**
- * An arrangement survives only when every itinerary it is built from survives.
- * Price is the exception: it is judged on the group total, not per itinerary,
+ * An arrangement survives only when every origin group's flights survive.
+ * Price is the exception: it is judged on the group total, not per group,
  * because a filter on price means what the whole group pays.
  */
 function arrangementPasses(
@@ -320,7 +316,7 @@ function arrangementPasses(
     if (total < min || total > max) return false;
   }
 
-  return itinerariesOf(arrangement).every((it) => itineraryPasses(it, filters, skip));
+  return flightSetsOf(arrangement).every((set) => flightSetPasses(set, filters, skip));
 }
 
 /** Returns a new array holding only the arrangements that pass every filter. */
@@ -347,7 +343,7 @@ export function countsFor(
   const withoutStops = arrangements.filter((a) => arrangementPasses(a, filters, "stops"));
   for (const bucket of ["non-stop", "1", "2", "3+"] as StopOption[]) {
     counts[`stops:${bucket}`] = withoutStops.filter((a) =>
-      itinerariesOf(a).every((it) => matchesStops(it, [bucket], filters.scopes.stops)),
+      flightSetsOf(a).every((it) => matchesStops(it, [bucket], filters.scopes.stops)),
     ).length;
   }
 
@@ -356,7 +352,7 @@ export function countsFor(
   );
   for (const name of airlinesIn(arrangements)) {
     counts[`airline:${name}`] = withoutAirlines.filter((a) =>
-      itinerariesOf(a).some((it) =>
+      flightSetsOf(a).some((it) =>
         matchesAirlines(it, filters.airlineMode, [name], filters.scopes.airlines),
       ),
     ).length;
@@ -367,13 +363,13 @@ export function countsFor(
   );
   for (const cabin of Object.keys(TRAVEL_CLASS_LABELS)) {
     counts[`class:${cabin}`] = withoutClass.filter((a) =>
-      itinerariesOf(a).every((it) => matchesTravelClass(it, cabin, filters.scopes.cabin)),
+      flightSetsOf(a).every((it) => matchesTravelClass(it, cabin, filters.scopes.cabin)),
     ).length;
   }
 
   counts["emissions:less"] = arrangements
     .filter((a) => arrangementPasses(a, filters, "emissions"))
-    .filter((a) => itinerariesOf(a).every((it) => matchesEmissions(it, true))).length;
+    .filter((a) => flightSetsOf(a).every((it) => matchesEmissions(it, true))).length;
 
   return counts;
 }
@@ -391,8 +387,8 @@ export function airlinesIn(arrangements: Arrangement[]): string[] {
 export function connectingAirportsIn(arrangements: Arrangement[]): string[] {
   const codes = new Set<string>();
   for (const arrangement of arrangements) {
-    for (const itinerary of itinerariesOf(arrangement)) {
-      for (const code of connectingAirports(itinerary)) codes.add(code);
+    for (const set of flightSetsOf(arrangement)) {
+      for (const code of connectingAirports(set)) codes.add(code);
     }
   }
   return [...codes].sort();

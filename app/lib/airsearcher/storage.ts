@@ -24,6 +24,9 @@ import {
 import type {
   Arrangement,
   FlightRecord,
+  GroupLeg,
+  NormalizedFlight,
+  Routing,
   SearchQuery,
 } from "@/lib/airsearcher/types";
 
@@ -116,12 +119,68 @@ function isStoredSearch(value: unknown): value is StoredSearch {
   );
 }
 
+/**
+ * The leg shape saved before each direction was routed separately: one routing
+ * for the whole trip, with the feeder and main flights stored as
+ * outbound/return pairs.
+ */
+interface LegacyLeg {
+  origin: string;
+  routing: Routing;
+  feeder: { outbound: NormalizedFlight; return: NormalizedFlight | null } | null;
+  main: { outbound: NormalizedFlight; return: NormalizedFlight | null };
+  passengers: number;
+}
+
+function isLegacyLeg(leg: unknown): leg is LegacyLeg {
+  const value = leg as Partial<LegacyLeg> | null;
+  return typeof value?.main?.outbound === "object" && !("outbound" in value);
+}
+
+/**
+ * Rewrites a legacy leg into the per-direction shape without changing a single
+ * flight, so an old search still shows exactly what it showed when it was saved.
+ */
+function upgradeLeg(leg: LegacyLeg): GroupLeg {
+  return {
+    origin: leg.origin,
+    passengers: leg.passengers,
+    outbound: {
+      direction: "outbound",
+      routing: leg.routing,
+      feeder: leg.feeder?.outbound ?? null,
+      main: leg.main.outbound,
+    },
+    return: leg.main.return
+      ? {
+          direction: "return",
+          routing: leg.routing,
+          feeder: leg.feeder?.return ?? null,
+          main: leg.main.return,
+        }
+      : null,
+  };
+}
+
+function upgradeEntry(entry: StoredSearch): StoredSearch {
+  return {
+    ...entry,
+    arrangements: entry.arrangements.map((arrangement) => ({
+      ...arrangement,
+      legs: (arrangement.legs as unknown[]).map((leg) =>
+        isLegacyLeg(leg) ? upgradeLeg(leg) : (leg as GroupLeg),
+      ),
+    })),
+  };
+}
+
 /** Newest first. Unreadable or malformed entries are silently dropped. */
 export function loadSearches(): StoredSearch[] {
   const raw = readJson(SEARCHES_KEY);
   if (!Array.isArray(raw)) return [];
   return raw
     .filter(isStoredSearch)
+    .map(upgradeEntry)
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
 

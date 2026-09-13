@@ -11,15 +11,12 @@
  */
 
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
-import { DEFAULT_RESULT_LIMITS } from "@/lib/airsearcher/config/ranking";
-import { buildItineraries } from "@/lib/airsearcher/combinations";
-import { poolKey } from "@/lib/airsearcher/grouping";
+import { cheapestFirst, poolKey, type FlightPool } from "@/lib/airsearcher/grouping";
 import { distanceBetweenAirports } from "@/lib/airsearcher/geo";
 import { airportByCode } from "@/data/places";
 import type { PlannedSearch } from "@/lib/airsearcher/queryPlan";
 import type {
   AirportCode,
-  Itinerary,
   NormalizedFlight,
   NormalizedLeg,
   NormalizedSegment,
@@ -240,36 +237,20 @@ export function mockFlightsFor(
 }
 
 /**
- * Builds the shared itinerary pool a set of planned searches would produce.
- *
- * Return searches are matched to their outbound counterpart by route, so a
- * round trip becomes paired itineraries exactly as the real pipeline will
- * produce them. This is the function that stands in for the whole network layer.
+ * Builds the shared flight pool a set of planned searches would produce, in
+ * exactly the shape the real pipeline produces it. This is the function that
+ * stands in for the whole network layer.
  */
 export function mockPool(
   plan: PlannedSearch[],
   travelClass = "economy",
-): Record<string, Itinerary[]> {
-  const outbound = plan.filter((s) => s.direction === "outbound");
-  const returning = plan.filter((s) => s.direction === "return");
+): FlightPool {
+  const pool: FlightPool = {};
 
-  const pool: Record<string, Itinerary[]> = {};
-
-  for (const search of outbound) {
-    const going = mockFlightsFor(search.from, search.to, search.date, travelClass);
-
-    // The matching return search is the same route reversed.
-    const back = returning.find(
-      (r) => r.from === search.to && r.to === search.from,
+  for (const search of plan) {
+    pool[poolKey(search.from, search.to, search.date)] = cheapestFirst(
+      mockFlightsFor(search.from, search.to, search.date, travelClass),
     );
-    const coming = back
-      ? mockFlightsFor(back.from, back.to, back.date, travelClass)
-      : null;
-
-    const key = poolKey(search.from, search.to, search.date);
-    const itineraries = buildItineraries(going, coming, DEFAULT_RESULT_LIMITS);
-
-    pool[key] = itineraries;
   }
 
   return pool;

@@ -2,14 +2,19 @@
  * Running a search end to end.
  *
  * The browser calls the server-only AirSearcher route after confirmation. That
- * route owns the SerpApi key and returns the same route-keyed itinerary pool the
- * rest of this pipeline consumes.
+ * route owns the SerpApi key and returns the raw flight records that the rest
+ * of this pipeline builds its route-keyed flight pool from.
  */
 
 import { DEFAULT_RANKING_CONFIG, levelToWeight } from "@/lib/airsearcher/config/ranking";
 import type { RankingPreferences } from "@/lib/airsearcher/config/ranking";
 import type { FilterState } from "@/lib/airsearcher/config/filters";
-import { buildArrangements, scoreArrangements, sortArrangements } from "@/lib/airsearcher/grouping";
+import {
+  buildArrangements,
+  scoreArrangements,
+  sortArrangements,
+  type FlightPool,
+} from "@/lib/airsearcher/grouping";
 import {
   candidateDates,
   planSearches,
@@ -26,8 +31,6 @@ import { cityById } from "@/data/places";
 import type {
   Arrangement,
   FlightRecord,
-  Itinerary,
-  NormalizedFlight,
   RoutingAllowance,
   SearchQuery,
 } from "@/lib/airsearcher/types";
@@ -87,7 +90,7 @@ export function weightsOf(filters: FilterState) {
 export function buildAllArrangements(
   query: SearchQuery,
   preferences: RankingPreferences,
-  pool: Record<string, Itinerary[]>,
+  pool: FlightPool,
   allow: RoutingAllowance = { direct: true, gather: true },
 ): Arrangement[] {
   const arrangements: Arrangement[] = [];
@@ -123,37 +126,21 @@ export function buildAllArrangements(
  * within the window costs zero SerpApi requests.
  */
 /**
- * Recovers per-route flight records from an itinerary pool.
+ * Recovers per-route flight records from a flight pool.
  *
- * Only needed when the server sends a pool but no records. The itineraries are
- * pairs, so the same flight appears many times over and is de-duplicated by id
- * here. This is lossy — `buildItineraries` has already capped each direction —
- * so it is a fallback, not the intended path.
+ * Only needed when the server sends a pool but no records. It is a fallback,
+ * not the intended path: the pool has already merged routes that share a key.
  */
-function recordsFromPool(
-  plan: PlannedSearch[],
-  pool: Record<string, Itinerary[]>,
-): FlightRecord[] {
-  return plan.map((search) => {
-    const itineraries = pool[poolKey(search.from, search.to, search.date)] ?? [];
-    const flights = new Map<string, NormalizedFlight>();
-
-    for (const itinerary of itineraries) {
-      const flight =
-        search.direction === "outbound" ? itinerary.outbound : itinerary.return;
-      if (flight) flights.set(flight.id, flight);
-    }
-
-    return {
-      id: searchId(search),
-      from: search.from,
-      to: search.to,
-      date: search.date,
-      direction: search.direction,
-      reason: search.reason,
-      flights: [...flights.values()],
-    };
-  });
+function recordsFromPool(plan: PlannedSearch[], pool: FlightPool): FlightRecord[] {
+  return plan.map((search) => ({
+    id: searchId(search),
+    from: search.from,
+    to: search.to,
+    date: search.date,
+    direction: search.direction,
+    reason: search.reason,
+    flights: pool[poolKey(search.from, search.to, search.date)] ?? [],
+  }));
 }
 
 /**
@@ -175,7 +162,7 @@ async function requestFlightRecords(
   });
   const data = (await response.json().catch(() => null)) as {
     records?: FlightRecord[];
-    pool?: Record<string, Itinerary[]>;
+    pool?: FlightPool;
     requestCount?: number;
     requestsMade?: number;
     error?: string;
@@ -225,8 +212,8 @@ export async function runSearch(
     );
   }
 
-  // The pool is derived, never stored: it is the cartesian product of the
-  // records and rebuilds from them whenever it is needed.
+  // The pool is derived, never stored: it rebuilds from the records whenever
+  // it is needed.
   const pool = poolFromRecords(live.records);
 
   const arrangements = sortArrangements(

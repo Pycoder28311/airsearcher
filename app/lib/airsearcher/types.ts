@@ -120,15 +120,44 @@ export interface OriginGroup {
  */
 export type Routing = "direct" | "gather";
 
-/** One origin group's complete journey within an arrangement. */
+/**
+ * One direction of one origin group's trip. Going out and coming back are
+ * routed independently, so a group can fly direct one way and gather the other.
+ */
+export interface Journey {
+  direction: "outbound" | "return";
+  routing: Routing;
+  /**
+   * The hop between the origin and the gathering airport: flown before `main`
+   * going out, after it coming back. null for direct journeys.
+   */
+  feeder: NormalizedFlight | null;
+  /** The flight to or from the destination. */
+  main: NormalizedFlight;
+}
+
+/** A journey's flights in the order they are flown. */
+export function journeyFlights(journey: Journey): NormalizedFlight[] {
+  if (!journey.feeder) return [journey.main];
+  return journey.direction === "outbound"
+    ? [journey.feeder, journey.main]
+    : [journey.main, journey.feeder];
+}
+
+/** One origin group's complete trip within an arrangement. */
 export interface GroupLeg {
   origin: AirportCode;
-  routing: Routing;
-  /** origin -> gathering airport. null for direct legs and for the gathering origin itself. */
-  feeder: Itinerary | null;
-  /** The flight that actually reaches the destination. */
-  main: Itinerary;
+  outbound: Journey;
+  /** null only on a one-way trip — a round trip always has a way back. */
+  return: Journey | null;
   passengers: number;
+}
+
+/** Every flight a group takes, going flights first. */
+export function legFlights(leg: GroupLeg): NormalizedFlight[] {
+  return leg.return
+    ? [...journeyFlights(leg.outbound), ...journeyFlights(leg.return)]
+    : journeyFlights(leg.outbound);
 }
 
 /**
@@ -158,7 +187,7 @@ export interface ArrangementTotals {
   longestTravelMinutes: number;
   earliestDeparture: string | null;
   latestArrival: string | null;
-  /** How many passengers route via the gathering airport. */
+  /** How many passengers route via the gathering airport in either direction. */
   gatheringCount: number;
   /** Distinct airlines appearing anywhere in the arrangement. */
   airlines: string[];

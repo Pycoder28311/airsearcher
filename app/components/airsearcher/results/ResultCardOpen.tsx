@@ -5,6 +5,12 @@ import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { grayLight, grayMid, radius } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
+import {
+  journeyArrival,
+  journeyDeparture,
+  pricePerHeadOf,
+  routingLabel,
+} from "@/lib/airsearcher/grouping";
 import { formatDuration, minutesBetweenTimes } from "@/lib/airsearcher/time";
 import type { Arrangement } from "@/lib/airsearcher/types";
 import FlightList from "./FlightList";
@@ -42,12 +48,10 @@ export default function ResultCardOpen({
           </thead>
           <tbody>
             {arrangement.legs.map((leg) => {
-              const start = (leg.feeder ?? leg.main).outbound.outbound.segments[0]?.departure
-                .time;
-              const mainSegments = leg.main.outbound.outbound.segments;
-              const end = mainSegments[mainSegments.length - 1]?.arrival.time;
-              const subtotal =
-                ((leg.feeder?.totalPrice ?? 0) + leg.main.totalPrice) * leg.passengers;
+              const start = journeyDeparture(leg.outbound);
+              const end = journeyArrival(leg.outbound);
+              const subtotal = pricePerHeadOf(leg) * leg.passengers;
+              const routing = routingLabel(leg, arrangement.gatheringAirport);
 
               return (
                 <tr key={leg.origin} className={`border-t ${grayMid.border}`}>
@@ -68,11 +72,7 @@ export default function ResultCardOpen({
                   <td className="px-3 py-2">
                     <Text
                       size="very small"
-                      value={
-                        leg.routing === "gather"
-                          ? `Via ${arrangement.gatheringAirport}`
-                          : "Direct"
-                      }
+                      value={routing.charAt(0).toUpperCase() + routing.slice(1)}
                       className="text-gray-600"
                     />
                   </td>

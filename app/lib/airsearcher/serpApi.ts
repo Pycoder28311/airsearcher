@@ -1,7 +1,5 @@
-import { buildItineraries } from "@/lib/airsearcher/combinations";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
-import { DEFAULT_RESULT_LIMITS } from "@/lib/airsearcher/config/ranking";
-import { poolKey } from "@/lib/airsearcher/grouping";
+import { cheapestFirst, poolKey, type FlightPool } from "@/lib/airsearcher/grouping";
 import {
   searchId,
   type PlannedRequestBatch,
@@ -10,7 +8,6 @@ import {
 import type {
   AirportCode,
   FlightRecord,
-  Itinerary,
   NormalizedEndpoint,
   NormalizedFlight,
   NormalizedLayover,
@@ -201,34 +198,32 @@ export function flightRecordsFromResponses(
 }
 
 /**
- * Rebuilds the route-keyed itinerary pool from stored records.
+ * Rebuilds the route-keyed flight pool from stored records.
  *
- * Pairing an outbound route with its reverse is all that separates raw flights
- * from itineraries, so the pool never has to be stored — it is regenerated from
- * the records whenever it is needed.
+ * Every record keeps its own route and date, so a return is only ever matched
+ * to flights from its own return date. The pool never has to be stored — it is
+ * regenerated from the records whenever it is needed.
  */
-export function poolFromRecords(records: FlightRecord[]): Record<string, Itinerary[]> {
-  const returning = records.filter((record) => record.direction === "return");
-  const pool: Record<string, Itinerary[]> = {};
+export function poolFromRecords(records: FlightRecord[]): FlightPool {
+  const pool: FlightPool = {};
 
-  for (const outbound of records.filter((record) => record.direction === "outbound")) {
-    const back = returning.find(
-      (record) => record.from === outbound.to && record.to === outbound.from,
-    );
-    pool[poolKey(outbound.from, outbound.to, outbound.date)] = buildItineraries(
-      outbound.flights,
-      back ? back.flights : null,
-      DEFAULT_RESULT_LIMITS,
-    );
+  for (const record of records) {
+    const key = poolKey(record.from, record.to, record.date);
+    const flights = pool[key] ?? [];
+    for (const flight of record.flights) {
+      if (!flights.some((existing) => existing.id === flight.id)) flights.push(flight);
+    }
+    pool[key] = flights;
   }
 
+  for (const key of Object.keys(pool)) pool[key] = cheapestFirst(pool[key]);
   return pool;
 }
 
-/** Builds the route-keyed itinerary pool straight from the API batches. */
+/** Builds the route-keyed flight pool straight from the API batches. */
 export function livePoolFromResponses(
   plan: PlannedSearch[],
   responses: SerpApiBatchResponse[],
-): Record<string, Itinerary[]> {
+): FlightPool {
   return poolFromRecords(flightRecordsFromResponses(plan, responses));
 }

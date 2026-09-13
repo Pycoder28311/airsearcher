@@ -2,7 +2,13 @@
 
 import Text from "@/framework/ui/iconText/Text";
 import { grayMid } from "@/config/theme";
-import type { Arrangement, NormalizedFlight } from "@/lib/airsearcher/types";
+import {
+  journeyFlights,
+  type Arrangement,
+  type GroupLeg,
+  type Journey,
+  type NormalizedFlight,
+} from "@/lib/airsearcher/types";
 import FlightRow from "./FlightRow";
 
 interface FlightEntry {
@@ -11,12 +17,42 @@ interface FlightEntry {
   flight: NormalizedFlight;
 }
 
+/** One entry per flight of a journey, in the order the passengers fly them. */
+function entriesOf(
+  arrangement: Arrangement,
+  leg: GroupLeg,
+  journey: Journey,
+): FlightEntry[] {
+  const hub = arrangement.gatheringAirport;
+  const destination = arrangement.destination.airport;
+  const people = `${leg.passengers} passengers`;
+  const far = journey.routing === "gather" ? hub : leg.origin;
+
+  return journeyFlights(journey).map((flight) => {
+    const isFeeder = flight === journey.feeder;
+    const route =
+      journey.direction === "outbound"
+        ? isFeeder
+          ? `${leg.origin} → ${hub}`
+          : `${far} → ${destination}`
+        : isFeeder
+          ? `${hub} → ${leg.origin}`
+          : `${destination} → ${far}`;
+
+    return {
+      key: `${leg.origin}-${journey.direction}-${isFeeder ? "feeder" : "main"}`,
+      heading: `${route}${isFeeder ? " · feeder" : ""} · ${people}`,
+      flight,
+    };
+  });
+}
+
 /**
  * Every individual flight in an arrangement, going flights first and returning
  * flights after, exactly as the brief requires.
  *
- * Within the going flights the feeder legs come before the main flight, because
- * that is the order the passengers actually fly them.
+ * Within each direction a group's flights are listed in the order they are
+ * flown: the feeder before the main flight going out, after it coming back.
  */
 export function flightsOf(arrangement: Arrangement): {
   going: FlightEntry[];
@@ -26,37 +62,8 @@ export function flightsOf(arrangement: Arrangement): {
   const returning: FlightEntry[] = [];
 
   for (const leg of arrangement.legs) {
-    if (leg.feeder) {
-      going.push({
-        key: `${leg.origin}-feeder-out`,
-        heading: `${leg.origin} → ${arrangement.gatheringAirport} · feeder · ${leg.passengers} passengers`,
-        flight: leg.feeder.outbound,
-      });
-    }
-    going.push({
-      key: `${leg.origin}-main-out`,
-      heading: `${leg.routing === "gather" ? arrangement.gatheringAirport : leg.origin} → ${
-        arrangement.destination.airport
-      } · ${leg.passengers} passengers`,
-      flight: leg.main.outbound,
-    });
-
-    if (leg.main.return) {
-      returning.push({
-        key: `${leg.origin}-main-back`,
-        heading: `${arrangement.destination.airport} → ${
-          leg.routing === "gather" ? arrangement.gatheringAirport : leg.origin
-        } · ${leg.passengers} passengers`,
-        flight: leg.main.return,
-      });
-    }
-    if (leg.feeder?.return) {
-      returning.push({
-        key: `${leg.origin}-feeder-back`,
-        heading: `${arrangement.gatheringAirport} → ${leg.origin} · feeder · ${leg.passengers} passengers`,
-        flight: leg.feeder.return,
-      });
-    }
+    going.push(...entriesOf(arrangement, leg, leg.outbound));
+    if (leg.return) returning.push(...entriesOf(arrangement, leg, leg.return));
   }
 
   return { going, returning };

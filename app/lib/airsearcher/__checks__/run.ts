@@ -15,6 +15,7 @@ import {
   enumerateRoutings,
   poolKey,
   scoreArrangements,
+  type FlightPool,
 } from "@/lib/airsearcher/grouping";
 import {
   planRequestBatches,
@@ -32,12 +33,11 @@ import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/storage";
 import { toggleAirport, selectCity } from "@/lib/airsearcher/mapSelection";
 import { mockFlightsFor, mockPool } from "@/lib/airsearcher/mockFlights";
-import { buildItineraries } from "@/lib/airsearcher/combinations";
 import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
 import { MIN_GATHER_BUFFER_MINUTES } from "@/lib/airsearcher/config/constants";
 import { EUROPE_CITIES_BY_ID } from "@/data/europeCities";
 import { airportByCode } from "@/data/places";
-import type { Itinerary, SearchQuery } from "@/lib/airsearcher/types";
+import type { NormalizedFlight, SearchQuery } from "@/lib/airsearcher/types";
 
 let passed = 0;
 function check(name: string, fn: () => void): void {
@@ -91,11 +91,23 @@ const ORIGINS = [
   { airport: "HER", passengers: 4 },
 ];
 
-check("enumerateRoutings yields 2^(n-1) and never routes the hub to itself", () => {
+check("enumerateRoutings yields 2^(n-1) one-way and never routes the hub to itself", () => {
   const routings = enumerateRoutings(ORIGINS, "ATH", { direct: true, gather: true });
   assert.equal(routings.length, 4);
   for (const routing of routings) {
-    assert.equal(routing.ATH, "direct");
+    assert.deepEqual(routing.ATH, { outbound: "direct", return: null });
+  }
+});
+
+check("enumerateRoutings routes each direction separately on a round trip", () => {
+  const routings = enumerateRoutings(ORIGINS, "ATH", { direct: true, gather: true }, true);
+  assert.equal(routings.length, 16);
+  assert.ok(
+    routings.some((r) => r.SKG.outbound === "direct" && r.SKG.return === "gather"),
+    "going direct and coming back via the hub must be a candidate",
+  );
+  for (const routing of routings) {
+    assert.deepEqual(routing.ATH, { outbound: "direct", return: "direct" });
   }
 });
 
@@ -211,7 +223,7 @@ function serpApiFixture(from: string, to: string, date: string, price: number) {
   };
 }
 
-check("SerpApi flight JSON is normalized and paired into the live pool", () => {
+check("SerpApi flight JSON is normalized into the live pool", () => {
   const normalized = normalizeSerpApiResponse(serpApiFixture("ATH", "BER", "2026-09-14", 90));
   assert.equal(normalized.length, 1);
   assert.equal(normalized[0].outbound.segments[0].departure.airport, "ATH");
@@ -227,7 +239,8 @@ check("SerpApi flight JSON is normalized and paired into the live pool", () => {
   ]);
 
   assert.equal(pool[poolKey("ATH", "BER", "2026-09-14")].length, 1);
-  assert.equal(pool[poolKey("ATH", "BER", "2026-09-14")][0].totalPrice, 160);
+  assert.equal(pool[poolKey("ATH", "BER", "2026-09-14")][0].price, 90);
+  assert.equal(pool[poolKey("BER", "ATH", "2026-09-21")][0].price, 70);
 });
 
 check("raw flight records are kept per route, and the pool rebuilds from them", () => {
@@ -327,10 +340,11 @@ check("buildArrangements produces one arrangement per viable routing", () => {
     allow: { direct: true, gather: true },
   });
   assert.ok(arrangements.length > 0, "expected at least one arrangement");
-  assert.ok(arrangements.length <= 4);
+  assert.ok(arrangements.length <= 16);
 
   for (const arrangement of arrangements) {
     assert.equal(arrangement.legs.length, 3);
+    assert.ok(arrangement.legs.every((leg) => leg.return !== null), "a round trip always returns");
     assert.equal(arrangement.totals.passengers, 20);
     assert.ok(arrangement.totals.totalPrice > 0);
   }
@@ -338,9 +352,9 @@ check("buildArrangements produces one arrangement per viable routing", () => {
 
 check("a gather leg is rejected when the feeder does not connect in time", () => {
   // A feeder landing one minute inside the buffer must not produce a leg.
-  const tightPool: Record<string, Itinerary[]> = { ...POOL };
+  const tightPool: FlightPool = { ...POOL };
   const mainList = tightPool[poolKey("ATH", "BER", "2026-09-14")];
-  const mainDeparture = mainList[0].outbound.outbound.segments[0].departure.time!;
+  const mainDeparture = mainList[0].outbound.segments[0].departure.time!;
   const [datePart, clockPart] = mainDeparture.split(" ");
   const [h, m] = clockPart.split(":").map(Number);
   const landMinutes = h * 60 + m - (MIN_GATHER_BUFFER_MINUTES - 1);
@@ -353,7 +367,7 @@ check("a gather leg is rejected when the feeder does not connect in time", () =>
   const last = tightFeeder.outbound.segments[tightFeeder.outbound.segments.length - 1];
   last.arrival.time = landing;
 
-  tightPool[poolKey("SKG", "ATH", "2026-09-14")] = buildItineraries([tightFeeder], null);
+  tightPool[poolKey("SKG", "ATH", "2026-09-14")] = [tightFeeder];
 
   const arrangements = buildArrangements({
     origins: [ORIGINS[0], ORIGINS[1]],
@@ -412,6 +426,121 @@ check("a priority date lifts a score without overriding a much better one", () =
   }
 });
 
+
+/* ── Per-direction routing (the London case) ────────────────────────────── */
+
+/** One single-segment flight with exact clock times, for hand-built pools. */
+function flight(from: string, to: string, departs: string, lands: string, price: number): NormalizedFlight {
+  return normalizeSerpApiResponse({
+    best_flights: [
+      {
+        flights: [
+          {
+            departure_airport: { id: from, name: from, time: departs },
+            arrival_airport: { id: to, name: to, time: lands },
+            airline: "Fixture Air",
+            flight_number: `FX ${from}${to}`,
+          },
+        ],
+        price,
+      },
+    ],
+  })[0];
+}
+
+const OUT = "2026-09-27";
+const BACK = "2026-10-04";
+const PAIR = [
+  { airport: "ATH", passengers: 2 },
+  { airport: "SKG", passengers: 2 },
+];
+
+/** ATH gathers; SKG can fly to London direct, but there is no STN -> SKG. */
+function londonPool(): FlightPool {
+  return {
+    [poolKey("ATH", "STN", OUT)]: [flight("ATH", "STN", `${OUT} 10:00`, `${OUT} 12:00`, 100)],
+    [poolKey("SKG", "STN", OUT)]: [flight("SKG", "STN", `${OUT} 09:00`, `${OUT} 12:00`, 80)],
+    [poolKey("SKG", "ATH", OUT)]: [flight("SKG", "ATH", `${OUT} 06:00`, `${OUT} 07:00`, 30)],
+    [poolKey("STN", "ATH", BACK)]: [flight("STN", "ATH", `${BACK} 13:00`, `${BACK} 17:00`, 90)],
+    [poolKey("ATH", "SKG", BACK)]: [flight("ATH", "SKG", `${BACK} 19:00`, `${BACK} 20:00`, 40)],
+  };
+}
+
+function londonArrangements(pool: FlightPool, returnDate: string | null = BACK) {
+  return buildArrangements({
+    origins: PAIR,
+    gatheringAirport: "ATH",
+    destination: { cityId: "uk-london", airport: "STN" },
+    pool,
+    departureDate: OUT,
+    returnDate,
+    allow: { direct: true, gather: true },
+  });
+}
+
+check("a group with no direct way back returns via the gathering airport", () => {
+  const arrangements = londonArrangements(londonPool());
+  assert.ok(arrangements.length > 0);
+  for (const arrangement of arrangements) {
+    const skg = arrangement.legs.find((leg) => leg.origin === "SKG")!;
+    assert.equal(skg.return?.routing, "gather");
+    assert.equal(skg.return?.feeder?.outbound.segments[0].departure.airport, "ATH");
+  }
+});
+
+check("going direct and coming back via the hub is priced from its own flights", () => {
+  const mixed = londonArrangements(londonPool()).find(
+    (a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === "direct",
+  )!;
+  assert.ok(mixed, "direct out, via ATH back must be offered");
+  // ATH: 2 x (100 + 90). SKG: 2 x (80 out + 90 STN->ATH + 40 ATH->SKG).
+  assert.equal(mixed.totals.totalPrice, 2 * 190 + 2 * 210);
+});
+
+check("a round trip with no way back for one group yields nothing", () => {
+  const pool = londonPool();
+  delete pool[poolKey("ATH", "SKG", BACK)];
+  assert.equal(londonArrangements(pool).length, 0);
+  assert.ok(londonArrangements(pool, null).length > 0, "one-way still works without returns");
+});
+
+check("a return feeder leaving before the main flight lands is rejected", () => {
+  const pool = londonPool();
+  // Lands in ATH at 17:00; leaving for SKG at 18:00 is inside the 90 minute buffer.
+  pool[poolKey("ATH", "SKG", BACK)] = [
+    flight("ATH", "SKG", `${BACK} 18:00`, `${BACK} 19:00`, 40),
+  ];
+  assert.equal(londonArrangements(pool).length, 0);
+});
+
+check("each return is matched to flights from its own return date", () => {
+  const records = [
+    { from: "ATH", to: "STN", date: OUT, direction: "outbound" as const, price: 100 },
+    { from: "STN", to: "ATH", date: BACK, direction: "return" as const, price: 90 },
+    { from: "STN", to: "ATH", date: "2026-10-05", direction: "return" as const, price: 5 },
+  ].map((r) => ({
+    id: `${r.from}-${r.to}-${r.date}-${r.direction}`,
+    from: r.from,
+    to: r.to,
+    date: r.date,
+    direction: r.direction,
+    reason: "main" as const,
+    flights: [flight(r.from, r.to, `${r.date} 10:00`, `${r.date} 12:00`, r.price)],
+  }));
+
+  const arrangements = buildArrangements({
+    origins: [{ airport: "ATH", passengers: 1 }],
+    gatheringAirport: "ATH",
+    destination: { cityId: "uk-london", airport: "STN" },
+    pool: poolFromRecords(records),
+    departureDate: OUT,
+    returnDate: BACK,
+    allow: { direct: true, gather: true },
+  });
+  assert.equal(arrangements.length, 1);
+  assert.equal(arrangements[0].totals.totalPrice, 190);
+});
+
 /* ── Map selection ───────────────────────────────────────────────────────── */
 
 check("selecting a city selects all of its airports", () => {
@@ -449,6 +578,51 @@ check("storage returns defaults when localStorage is unavailable", () => {
   assert.deepEqual(loadSearches(), []);
   assert.equal(loadFilters().type, "round-trip");
   assert.equal(loadPreferences().sidebarCollapsed, false);
+});
+
+check("a search saved in the old leg shape still loads, flights unchanged", () => {
+  const out = flight("SKG", "ATH", `${OUT} 06:00`, `${OUT} 07:00`, 30);
+  const back = flight("ATH", "SKG", `${BACK} 19:00`, `${BACK} 20:00`, 40);
+  const mainOut = flight("ATH", "STN", `${OUT} 10:00`, `${OUT} 12:00`, 100);
+  const mainBack = flight("STN", "ATH", `${BACK} 13:00`, `${BACK} 17:00`, 90);
+  const legacy = [
+    {
+      id: "old",
+      savedAt: "2026-09-13T10:00:00.000Z",
+      label: "London",
+      key: "k",
+      query: QUERY,
+      arrangements: [
+        {
+          legs: [
+            {
+              origin: "SKG",
+              routing: "gather",
+              feeder: { outbound: out, return: back },
+              main: { outbound: mainOut, return: mainBack },
+              passengers: 2,
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  const store = new Map([["airsearcher:searches:v1", JSON.stringify(legacy)]]);
+  const g = globalThis as { window?: unknown };
+  g.window = { localStorage: { getItem: (k: string) => store.get(k) ?? null } };
+  try {
+    const [entry] = loadSearches();
+    assert.ok(entry, "the old entry must not be dropped");
+    const leg = entry.arrangements[0].legs[0];
+    assert.equal(leg.outbound.routing, "gather");
+    assert.equal(leg.outbound.feeder?.id, out.id);
+    assert.equal(leg.outbound.main.id, mainOut.id);
+    assert.equal(leg.return?.main.id, mainBack.id);
+    assert.equal(leg.return?.feeder?.id, back.id);
+  } finally {
+    delete g.window;
+  }
 });
 
 console.log(`\n${passed} checks passed.`);

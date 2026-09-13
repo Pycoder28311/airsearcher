@@ -8,7 +8,13 @@ export async function GET(req: Request) {
     const session = await getServerSession(authOptions)
 
     if (!session || !session.user || !session.user.email) {
-      return NextResponse.json({}, { status: 200 })
+      const response = NextResponse.json({}, { status: 200 })
+      // clear session cookies that can't be decrypted (e.g. made with another secret)
+      const cookieHeader = req.headers.get("cookie") || ""
+      for (const name of cookieHeader.match(/(__Secure-)?next-auth\.session-token(\.\d+)?(?==)/g) || []) {
+        response.cookies.delete(name)
+      }
+      return response
     }
 
     const user = await prisma.user.findUnique({

@@ -4,6 +4,11 @@ import Text from "@/framework/ui/iconText/Text";
 import { grayMid, radius } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { formatClock, formatDuration, minutesBetweenTimes } from "@/lib/airsearcher/time";
+import {
+  journeyArrival,
+  journeyDeparture,
+  pricePerHeadOf,
+} from "@/lib/airsearcher/grouping";
 import type { Arrangement, GroupLeg } from "@/lib/airsearcher/types";
 
 /**
@@ -15,13 +20,15 @@ const TIME = "#F97316";
 const TRACK = "#E5E7EB";
 
 function legStart(leg: GroupLeg): string | null {
-  const source = leg.feeder ?? leg.main;
-  return source.outbound.outbound.segments[0]?.departure.time ?? null;
+  return journeyDeparture(leg.outbound);
 }
 
 function legEnd(leg: GroupLeg): string | null {
-  const segments = leg.main.outbound.outbound.segments;
-  return segments[segments.length - 1]?.arrival.time ?? null;
+  return journeyArrival(leg.outbound);
+}
+
+function gathers(leg: GroupLeg): boolean {
+  return leg.outbound.routing === "gather" || leg.return?.routing === "gather";
 }
 
 /**
@@ -33,8 +40,7 @@ function legEnd(leg: GroupLeg): string | null {
 export default function ResultCharts({ arrangement }: { arrangement: Arrangement }) {
   const perLeg = arrangement.legs.map((leg) => ({
     leg,
-    subtotal:
-      ((leg.feeder?.totalPrice ?? 0) + leg.main.totalPrice) * leg.passengers,
+    subtotal: pricePerHeadOf(leg) * leg.passengers,
     minutes: minutesBetweenTimes(legStart(leg), legEnd(leg)),
   }));
 
@@ -89,7 +95,7 @@ export default function ResultCharts({ arrangement }: { arrangement: Arrangement
             <div key={`time-${leg.origin}`} className="flex items-center gap-3">
               <Text
                 size="very small"
-                value={`${leg.origin}${leg.routing === "gather" ? " ↷" : ""}`}
+                value={`${leg.origin}${gathers(leg) ? " ↷" : ""}`}
                 className="w-20 shrink-0 text-gray-500"
               />
               <div className="h-2.5 min-w-0 flex-1 overflow-hidden rounded-full" style={{ background: TRACK }}>
@@ -117,7 +123,7 @@ export default function ResultCharts({ arrangement }: { arrangement: Arrangement
               size="very small"
               value={`${leg.origin} ${formatClock(legStart(leg))} → ${arrangement.destination.airport} ${formatClock(
                 legEnd(leg),
-              )}${leg.feeder ? ` (via ${arrangement.gatheringAirport})` : ""}`}
+              )}${leg.outbound.feeder ? ` (via ${arrangement.gatheringAirport})` : ""}`}
               className="tabular-nums text-gray-500"
             />
           ))}
