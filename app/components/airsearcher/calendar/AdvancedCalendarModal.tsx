@@ -29,7 +29,7 @@ const MODES: { value: PaintMode; label: string }[] = [
  * length, dates to avoid, and dates to favour.
  *
  * Exclusions are absolute — an excluded date is never searched, so removing one
- * genuinely lowers the SerpApi cost, which the footer shows live. Priorities
+ * genuinely lowers the number of searches, which the footer shows live. Priorities
  * only break ties between near-equal results.
  *
  * Everything is edited on a working copy; nothing is applied until Apply. The
@@ -82,7 +82,9 @@ export default function AdvancedCalendarModal({
   );
 
   const dates = candidateDates(draft);
-  const cost = costOf(planSearches(draft));
+  const sources = draft.rangeWithSerpApi
+    ? `Travelpayouts + ${describeCost(costOf(planSearches(draft)))}`
+    : `Travelpayouts only, ${describeCost(0)}`;
 
   const paint = (iso: string) => {
     if (mode === "exclude") {
@@ -150,7 +152,7 @@ export default function AdvancedCalendarModal({
           <div className="flex flex-col">
             <Text
               size="very small"
-              value={`${dates.length} candidate date${dates.length === 1 ? "" : "s"} · ${describeCost(cost)}`}
+              value={`${dates.length} candidate date${dates.length === 1 ? "" : "s"} · ${sources}`}
               className={tooLong ? colorRed.text : "text-gray-500"}
             />
             {tooLong && (

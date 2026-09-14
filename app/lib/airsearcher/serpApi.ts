@@ -1,5 +1,5 @@
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
-import { cheapestFirst, poolKey, type FlightPool } from "@/lib/airsearcher/grouping";
+import { poolKey, uniqueFlights, type FlightPool } from "@/lib/airsearcher/grouping";
 import {
   searchId,
   type PlannedRequestBatch,
@@ -180,9 +180,7 @@ export function flightRecordsFromResponses(
       if (!route) continue;
 
       const id = searchId(route);
-      const current = flightsBySearch.get(id) ?? [];
-      if (!current.some((existing) => existing.id === flight.id)) current.push(flight);
-      flightsBySearch.set(id, current);
+      flightsBySearch.set(id, [...(flightsBySearch.get(id) ?? []), flight]);
     }
   }
 
@@ -193,7 +191,8 @@ export function flightRecordsFromResponses(
     date: search.date,
     direction: search.direction,
     reason: search.reason,
-    flights: flightsBySearch.get(searchId(search)) ?? [],
+    // The same flight can come back more than once; keep one, the cheapest.
+    flights: uniqueFlights(flightsBySearch.get(searchId(search)) ?? []),
   }));
 }
 
@@ -209,14 +208,11 @@ export function poolFromRecords(records: FlightRecord[]): FlightPool {
 
   for (const record of records) {
     const key = poolKey(record.from, record.to, record.date);
-    const flights = pool[key] ?? [];
-    for (const flight of record.flights) {
-      if (!flights.some((existing) => existing.id === flight.id)) flights.push(flight);
-    }
-    pool[key] = flights;
+    pool[key] = [...(pool[key] ?? []), ...record.flights];
   }
 
-  for (const key of Object.keys(pool)) pool[key] = cheapestFirst(pool[key]);
+  // Records saved earlier can still hold duplicates, so they are removed here too.
+  for (const key of Object.keys(pool)) pool[key] = uniqueFlights(pool[key]);
   return pool;
 }
 

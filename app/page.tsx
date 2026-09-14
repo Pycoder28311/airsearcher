@@ -10,19 +10,16 @@ import AdvancedCalendarModal from "@/components/airsearcher/calendar/AdvancedCal
 import MapModal from "@/components/airsearcher/map/MapModal";
 import { DEFAULT_GATHERING_AIRPORT, GREEK_ORIGIN_DEFAULTS } from "@/lib/airsearcher/config/constants";
 import { loadFilters, loadPreferences, loadSearches, removeSearch, savePreferences, type StoredSearch } from "@/lib/airsearcher/storage";
-import { runSearch, SearchRequestError } from "@/lib/airsearcher/search";
+import { runSearch, SearchRequestError, usesSerpApi } from "@/lib/airsearcher/search";
 import { addDays, isoDate } from "@/lib/airsearcher/time";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 
-/** A sensible starting query: the three Greek airports, a fortnight away. */
+/** A sensible starting query: one passenger from each Greek airport, a fortnight away. */
 function initialQuery(): SearchQuery {
   const departure = addDays(isoDate(new Date()), 14);
   return {
     destination: { cityId: "", airports: [] },
-    origins: GREEK_ORIGIN_DEFAULTS.map((airport, index) => ({
-      airport,
-      passengers: index === 0 ? 10 : index === 1 ? 6 : 4,
-    })),
+    origins: GREEK_ORIGIN_DEFAULTS.map((airport) => ({ airport, passengers: 1 })),
     gatheringAirport: DEFAULT_GATHERING_AIRPORT,
     tripType: "round-trip",
     dateMode: "exact",
@@ -32,6 +29,7 @@ function initialQuery(): SearchQuery {
     tripDurationDays: 7,
     excludedDates: [],
     priorityDates: {},
+    sameAirline: true,
   };
 }
 
@@ -85,7 +83,9 @@ export default function HomePage() {
         "Success",
         outcome.reused
           ? "Reused saved results — no SerpApi requests spent."
-          : `Found ${outcome.entry.arrangements.length} arrangements using ${outcome.requestCount} SerpApi requests.`,
+          : !usesSerpApi(query)
+            ? `Found ${outcome.entry.travelpayouts?.arrangements.length ?? 0} arrangements with Travelpayouts.`
+            : `Found ${outcome.entry.arrangements.length} arrangements using ${outcome.requestCount} SerpApi requests.`,
       );
       router.push(`/results?search=${outcome.entry.id}`);
     } catch (error) {

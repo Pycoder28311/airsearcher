@@ -35,6 +35,9 @@ import type {
   SearchQuery,
 } from "@/lib/airsearcher/types";
 
+/** Most arrangements stored for one search, so saved searches fit in browser storage. */
+const MAX_ARRANGEMENTS_PER_SEARCH = 300;
+
 export interface SearchOutcome {
   entry: StoredSearch;
   /** True when a fresh stored result was reused and nothing was "fetched". */
@@ -53,14 +56,23 @@ export class SearchRequestError extends Error {
   }
 }
 
-/** The searches this query would need right now, after checking the cache. */
+/**
+ * Whether a query is answered by SerpApi. A date range multiplies the requests
+ * by every candidate date, so ranges use Travelpayouts only unless SerpApi is
+ * asked for as well.
+ */
+export function usesSerpApi(query: SearchQuery): boolean {
+  return query.dateMode === "exact" || query.rangeWithSerpApi === true;
+}
+
+/** The SerpApi searches this query would need right now, after checking the cache. */
 export function previewCost(query: SearchQuery, allow?: RoutingAllowance): {
   plan: PlannedSearch[];
   cost: number;
   cached: StoredSearch | null;
 } {
   const cached = findFreshByKey(searchKeyOf(query));
-  const plan = cached ? [] : planSearches(query, allow);
+  const plan = cached || !usesSerpApi(query) ? [] : planSearches(query, allow);
   return { plan, cost: costOf(plan), cached };
 }
 
@@ -106,17 +118,33 @@ export function buildAllArrangements(
           departureDate,
           returnDate: returnDateFor(query, departureDate),
           allow,
+          sameAirline: query.sameAirline,
         }),
       );
     }
   }
 
-  return scoreArrangements(
-    arrangements,
-    preferences.weights,
-    preferences,
-    query.priorityDates,
+  // Every arrangement is stored in the browser with its flights, so only the
+  // best-scoring ones are kept; the results page re-scores whatever survives.
+  // The cheapest of each date is always kept, so no day drops out of the
+  // cost-per-day chart because of the cap.
+  const ranked = sortArrangements(
+    scoreArrangements(arrangements, preferences.weights, preferences, query.priorityDates),
+    "score",
   );
+  const cheapestPerDate = new Map<string, Arrangement>();
+  for (const arrangement of ranked) {
+    const current = cheapestPerDate.get(arrangement.departureDate);
+    if (!current || arrangement.totals.totalPrice < current.totals.totalPrice) {
+      cheapestPerDate.set(arrangement.departureDate, arrangement);
+    }
+  }
+  const kept = new Set(cheapestPerDate.values());
+  for (const arrangement of ranked) {
+    if (kept.size >= MAX_ARRANGEMENTS_PER_SEARCH) break;
+    kept.add(arrangement);
+  }
+  return ranked.filter((arrangement) => kept.has(arrangement));
 }
 
 /**
@@ -186,6 +214,30 @@ async function requestFlightRecords(
   };
 }
 
+/** Asks the server for the same routes from Travelpayouts. Never throws. */
+async function requestTravelpayoutsRecords(
+  query: SearchQuery,
+  allow: RoutingAllowance,
+): Promise<{ records: FlightRecord[] } | { error: string }> {
+  try {
+    const response = await fetch("/api/airsearcher/travelpayouts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, allow }),
+    });
+    const data = (await response.json().catch(() => null)) as {
+      records?: FlightRecord[];
+      error?: string;
+    } | null;
+    if (!response.ok || !Array.isArray(data?.records)) {
+      return { error: data?.error ?? "The Travelpayouts search failed." };
+    }
+    return { records: data.records };
+  } catch {
+    return { error: "Travelpayouts could not be reached." };
+  }
+}
+
 export async function runSearch(
   query: SearchQuery,
   filters: FilterState,
@@ -202,8 +254,34 @@ export async function runSearch(
     weights: weightsOf(filters),
   };
 
+  // A date range is answered by Travelpayouts alone: no SerpApi requests.
+  if (!usesSerpApi(query)) {
+    const alternative = await requestTravelpayoutsRecords(query, allow);
+    if ("error" in alternative) throw new SearchRequestError(alternative.error, 0);
+
+    const entry: StoredSearch = {
+      id: `search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: new Date().toISOString(),
+      label: labelFor(query),
+      key,
+      query,
+      arrangements: [],
+      travelpayouts: {
+        records: alternative.records,
+        arrangements: sortArrangements(
+          buildAllArrangements(query, withWeights, poolFromRecords(alternative.records), allow),
+          "score",
+        ),
+      },
+    };
+    saveSearch(entry);
+    return { entry, reused: false, requestCount: 0 };
+  }
+
   const plan = planSearches(query, allow);
   const expectedCount = costOf(plan);
+  // Started alongside SerpApi and never allowed to fail the search.
+  const travelpayouts = requestTravelpayoutsRecords(query, allow);
   const live = await requestFlightRecords(query, allow, plan);
   if (live.requestCount !== expectedCount) {
     throw new SearchRequestError(
@@ -221,6 +299,19 @@ export async function runSearch(
     "score",
   );
 
+  // Travelpayouts records go through exactly the same pool and grouping.
+  const alternative = await travelpayouts;
+  const travelpayoutsResult =
+    "records" in alternative
+      ? {
+          records: alternative.records,
+          arrangements: sortArrangements(
+            buildAllArrangements(query, withWeights, poolFromRecords(alternative.records), allow),
+            "score",
+          ),
+        }
+      : { arrangements: [], error: alternative.error };
+
   const entry: StoredSearch = {
     id: `search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     savedAt: new Date().toISOString(),
@@ -229,6 +320,7 @@ export async function runSearch(
     query,
     arrangements,
     records: live.records,
+    travelpayouts: travelpayoutsResult,
   };
 
   saveSearch(entry);

@@ -8,6 +8,7 @@ import { useAlert } from "@/framework/ui/useAlert";
 import { grayMid } from "@/config/theme";
 import FilterSidebar from "@/components/airsearcher/filters/FilterSidebar";
 import SidebarToggle from "@/components/airsearcher/common/SidebarToggle";
+import CostPerDayChart from "@/components/airsearcher/results/CostPerDayChart";
 import ExpandAllToggle from "@/components/airsearcher/results/ExpandAllToggle";
 import FloatingLayer from "@/components/airsearcher/results/FloatingLayer";
 import ResultCard from "@/components/airsearcher/results/ResultCard";
@@ -16,9 +17,14 @@ import SortByDropdown from "@/components/airsearcher/results/SortByDropdown";
 import { useFloatingWindows } from "@/components/airsearcher/results/useFloatingWindows";
 import { resetFilters, type FilterState } from "@/lib/airsearcher/config/filters";
 import type { ArrangementSortMode } from "@/lib/airsearcher/grouping";
-import { scoreArrangements, sortArrangements } from "@/lib/airsearcher/grouping";
+import {
+  scoreArrangements,
+  sortArrangements,
+  uniqueArrangements,
+} from "@/lib/airsearcher/grouping";
 import { applyScopedFilters, explainEmpty } from "@/lib/airsearcher/filtering";
-import { weightsOf } from "@/lib/airsearcher/search";
+import { candidateDates } from "@/lib/airsearcher/queryPlan";
+import { usesSerpApi, weightsOf } from "@/lib/airsearcher/search";
 import {
   findSearchById,
   isStale,
@@ -29,6 +35,14 @@ import {
   type StoredPreferences,
   type StoredSearch,
 } from "@/lib/airsearcher/storage";
+
+/** Which API's results the page is showing. */
+type ResultSource = "serpapi" | "travelpayouts";
+
+const SOURCES: { id: ResultSource; label: string }[] = [
+  { id: "serpapi", label: "SerpApi" },
+  { id: "travelpayouts", label: "Travelpayouts" },
+];
 
 function ResultsView() {
   const params = useSearchParams();
@@ -44,6 +58,7 @@ function ResultsView() {
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [now, setNow] = useState<number | null>(null);
+  const [source, setSource] = useState<ResultSource>("serpapi");
 
   /* eslint-disable react-hooks/set-state-in-effect --
      Reading browser storage is exactly the "subscribe to an external system"
@@ -70,6 +85,22 @@ function ResultsView() {
   }, [searchId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  const rangeSearch = entry?.query.dateMode === "advanced";
+  // A search without SerpApi has only Travelpayouts results, so there is nothing to switch.
+  const bothSources = entry ? usesSerpApi(entry.query) : true;
+  const activeSource: ResultSource = bothSources ? source : "travelpayouts";
+
+  // The only thing the tab changes: which API's arrangements feed the pipeline.
+  const arrangements = useMemo(() => {
+    if (!entry) return [];
+    // Searches saved before duplicates were removed can still hold them.
+    return uniqueArrangements(
+      activeSource === "serpapi"
+        ? entry.arrangements
+        : (entry.travelpayouts?.arrangements ?? []),
+    );
+  }, [entry, activeSource]);
+
   /**
    * The whole results pipeline: filter, re-score against the surviving set,
    * then sort. Scoring has to rerun after filtering because `priceIndex` is
@@ -77,7 +108,7 @@ function ResultsView() {
    */
   const visible = useMemo(() => {
     if (!entry || !filters || !preferences) return [];
-    const surviving = applyScopedFilters(entry.arrangements, filters);
+    const surviving = applyScopedFilters(arrangements, filters);
     const scored = scoreArrangements(
       surviving,
       weightsOf(filters),
@@ -85,7 +116,7 @@ function ResultsView() {
       preferences.dates.priority,
     );
     return sortArrangements(scored, sortMode);
-  }, [entry, filters, preferences, sortMode]);
+  }, [entry, arrangements, filters, preferences, sortMode]);
 
   const cheapestPrice =
     visible.length > 0 ? Math.min(...visible.map((a) => a.totals.totalPrice)) : null;
@@ -129,7 +160,7 @@ function ResultsView() {
 
   const listed = visible.filter((a) => !floating.isFloating(a.id));
   const allOpen = listed.length > 0 && listed.every((a) => openIds.has(a.id));
-  const reasons = visible.length === 0 ? explainEmpty(entry.arrangements, filters) : [];
+  const reasons = visible.length === 0 ? explainEmpty(arrangements, filters) : [];
 
   return (
     <div className="flex w-full gap-6">
@@ -140,7 +171,7 @@ function ResultsView() {
         onChange={updateFilters}
         preferences={preferences}
         onPreferencesChange={updatePreferences}
-        arrangements={entry.arrangements}
+        arrangements={arrangements}
         query={entry.query}
       />
 
@@ -149,9 +180,46 @@ function ResultsView() {
           entry={entry}
           now={now}
           shown={visible.length}
-          total={entry.arrangements.length}
+          total={arrangements.length}
           stale={isStale(entry, now)}
         />
+
+        {bothSources && (
+          <div className="flex flex-wrap items-center gap-2">
+            {SOURCES.map((tab) => (
+              <Button
+                key={tab.id}
+                styleType={source === tab.id ? "primary" : "tertiary"}
+                onClick={() => {
+                  // Arrangement ids repeat across APIs, so open cards do not carry over.
+                  setOpenIds(new Set());
+                  setSource(tab.id);
+                }}
+              >
+                {tab.label}
+              </Button>
+            ))}
+          </div>
+        )}
+
+        {activeSource === "travelpayouts" && !entry.travelpayouts && (
+          <Text
+            size="small"
+            value="This search was saved before Travelpayouts results were collected. Run it again to get them."
+            className="text-gray-500"
+          />
+        )}
+        {activeSource === "travelpayouts" && entry.travelpayouts?.error && (
+          <Text
+            size="small"
+            value={`Travelpayouts search failed: ${entry.travelpayouts.error}`}
+            className="text-gray-500"
+          />
+        )}
+
+        {rangeSearch && (
+          <CostPerDayChart dates={candidateDates(entry.query)} arrangements={visible} />
+        )}
 
         <div
           className={`flex flex-wrap items-center gap-2 border-y ${grayMid.border} py-2`}

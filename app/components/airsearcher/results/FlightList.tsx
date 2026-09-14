@@ -25,7 +25,7 @@ function entriesOf(
 ): FlightEntry[] {
   const hub = arrangement.gatheringAirport;
   const destination = arrangement.destination.airport;
-  const people = `${leg.passengers} passengers`;
+  const people = `${leg.passengers} passenger${leg.passengers === 1 ? "" : "s"}`;
   const far = journey.routing === "gather" ? hub : leg.origin;
 
   return journeyFlights(journey).map((flight) => {
@@ -39,9 +39,19 @@ function entriesOf(
           ? `${hub} → ${leg.origin}`
           : `${destination} → ${far}`;
 
+    // The hub flight of a gathering group is often the one the hub's own group
+    // is on too, so it says whose connection it is.
+    const note = isFeeder
+      ? " · feeder"
+      : journey.routing === "gather"
+        ? journey.direction === "outbound"
+          ? ` · ${leg.origin} passengers, after their stop in ${hub}`
+          : ` · ${leg.origin} passengers, stop in ${hub} before ${leg.origin}`
+        : "";
+
     return {
       key: `${leg.origin}-${journey.direction}-${isFeeder ? "feeder" : "main"}`,
-      heading: `${route}${isFeeder ? " · feeder" : ""} · ${people}`,
+      heading: `${route}${note} · ${people}`,
       flight,
     };
   });

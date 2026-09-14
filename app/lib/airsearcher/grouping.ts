@@ -2,9 +2,8 @@
  * Turning per-route flights into whole-group arrangements.
  *
  * This is the one genuinely new module: everything else is ported. It decides
- * which origin groups fly direct and which gather at a hub first — separately
- * for the way out and the way back — assembles a complete plan for the whole
- * group, and scores it.
+ * which origin groups fly direct and which gather at a hub first, assembles a
+ * complete plan for the whole group, and scores it.
  *
  * The scoring arithmetic is NOT reinvented — `priceIndex`, `legHourIndex` and
  * `normalizeWeights` come from `ranking.ts` unchanged. The only addition is a
@@ -40,6 +39,9 @@ import {
   type RoutingAllowance,
 } from "@/lib/airsearcher/types";
 
+/** The airline name a flight gets when its segments are on different airlines. */
+export const MULTIPLE_AIRLINES = "Multiple airlines";
+
 /** How arrangements can be ordered on the results page. */
 export type ArrangementSortMode =
   | "score"
@@ -60,7 +62,7 @@ export type FlightPool = Record<string, NormalizedFlight[]>;
 /** How one origin group travels in each direction. */
 export interface LegRouting {
   outbound: Routing;
-  /** null on a one-way trip. */
+  /** null on a one-way trip; otherwise the same as `outbound`. */
   return: Routing | null;
 }
 
@@ -69,8 +71,8 @@ export interface LegRouting {
  *
  * The gathering airport's own group is always "direct" — it is already there,
  * so routing it through itself is meaningless and never emitted. Each other
- * origin picks a mode per direction, so with `n` origins and both modes allowed
- * this yields 2^(n-1) routings one-way and 4^(n-1) round trip.
+ * origin picks one mode for the whole trip, so with `n` origins and both modes
+ * allowed this yields 2^(n-1) routings.
  */
 export function enumerateRoutings(
   origins: OriginGroup[],
@@ -87,14 +89,10 @@ export function enumerateRoutings(
   if (allow.gather) modes.push("gather");
   if (modes.length === 0) return [];
 
-  const choices: LegRouting[] = [];
-  for (const outbound of modes) {
-    if (!roundTrip) {
-      choices.push({ outbound, return: null });
-      continue;
-    }
-    for (const back of modes) choices.push({ outbound, return: back });
-  }
+  const choices: LegRouting[] = modes.map((mode) => ({
+    outbound: mode,
+    return: roundTrip ? mode : null,
+  }));
 
   let routings: Record<AirportCode, LegRouting>[] = [{}];
   for (const origin of travelling) {
@@ -130,15 +128,70 @@ export function poolKey(from: AirportCode, to: AirportCode, date: string): strin
   return `${from}-${to}-${date}`;
 }
 
+/**
+ * What a flight physically is: its segments' flight numbers and departure
+ * times. Providers can return the same flight several times under different
+ * ids (Google lists some in both "best" and "other"), so this — not the id — is
+ * what identifies a duplicate.
+ */
+export function flightKey(flight: NormalizedFlight): string {
+  return segmentKeys([flight]).join("+");
+}
+
+function segmentKeys(flights: NormalizedFlight[]): string[] {
+  return flights.flatMap((flight) =>
+    flight.outbound.segments.map(
+      (s) =>
+        `${s.flightNumber ?? `${s.departure.airport}-${s.arrival.airport}`}@${s.departure.time ?? ""}`,
+    ),
+  );
+}
+
+/** One copy of each flight, the cheapest where copies differ in price. */
+export function uniqueFlights(flights: NormalizedFlight[]): NormalizedFlight[] {
+  const byKey = new Map<string, NormalizedFlight>();
+  for (const flight of cheapestFirst(flights)) {
+    const key = flightKey(flight);
+    if (!byKey.has(key)) byKey.set(key, flight);
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * One copy of each arrangement that flies the same segments for every group.
+ * The same two flights can be one ticket with a stop or two separate tickets
+ * via the hub; only the cheaper is kept, the single ticket on a tie.
+ */
+export function uniqueArrangements(arrangements: Arrangement[]): Arrangement[] {
+  const tickets = (a: Arrangement) => a.legs.reduce((n, leg) => n + legFlights(leg).length, 0);
+  const signature = (a: Arrangement) =>
+    `${a.destination.airport}|${a.departureDate}|${[...a.legs]
+      .sort((x, y) => x.origin.localeCompare(y.origin))
+      .map((leg) => {
+        const back = leg.return ? segmentKeys(journeyFlights(leg.return)).join("+") : "";
+        return `${leg.origin}:${segmentKeys(journeyFlights(leg.outbound)).join("+")}/${back}`;
+      })
+      .join(";")}`;
+
+  const kept = new Map<string, Arrangement>();
+  for (const arrangement of arrangements) {
+    const key = signature(arrangement);
+    const current = kept.get(key);
+    const better =
+      !current ||
+      arrangement.totals.totalPrice < current.totals.totalPrice ||
+      (arrangement.totals.totalPrice === current.totals.totalPrice &&
+        tickets(arrangement) < tickets(current));
+    if (better) kept.set(key, arrangement);
+  }
+  // Keep the original order among the survivors.
+  const survivors = new Set(kept.values());
+  return arrangements.filter((a) => survivors.has(a));
+}
+
 /** Cheapest first; a missing price sorts last. Returns a new array. */
 export function cheapestFirst(flights: NormalizedFlight[]): NormalizedFlight[] {
   return [...flights].sort((a, b) => compareNullable(a.price, b.price, "asc"));
-}
-
-/** Cheapest flight in a list; null when the list is empty. */
-function cheapest(list: NormalizedFlight[] | undefined): NormalizedFlight | null {
-  if (!list || list.length === 0) return null;
-  return cheapestFirst(list)[0];
 }
 
 /** When a flight leaves, as a full "YYYY-MM-DD HH:MM" string. */
@@ -251,15 +304,74 @@ export interface BuildArrangementsArgs {
   /** null for a one-way trip. */
   returnDate: string | null;
   allow: RoutingAllowance;
+  /** Only arrangements where every flight is on one airline. */
+  sameAirline?: boolean;
 }
 
 /**
- * One arrangement per viable routing, each picking the cheapest usable flight
- * for every hop. A routing that cannot be flown produces no arrangement at all
- * rather than a bad one — no flights in the pool, a gather hop that does not
- * connect, or, on a round trip, any group without a way back.
+ * Arrangements flown entirely by one airline: the normal assembly run once per
+ * airline on a pool holding only that airline's flights. A flight shared
+ * between airlines ("Multiple airlines", or no name) never qualifies.
+ */
+function buildSameAirlineArrangements(args: BuildArrangementsArgs): Arrangement[] {
+  const airlines = new Set<string>();
+  for (const flights of Object.values(args.pool)) {
+    for (const flight of flights) {
+      if (flight.airline.name && flight.airline.name !== MULTIPLE_AIRLINES) {
+        airlines.add(flight.airline.name);
+      }
+    }
+  }
+
+  return [...airlines].flatMap((airline) => {
+    const pool: FlightPool = {};
+    for (const [key, flights] of Object.entries(args.pool)) {
+      pool[key] = flights.filter((flight) => flight.airline.name === airline);
+    }
+    // The airline is part of the id: two airlines can share the same routing.
+    return buildArrangements({ ...args, pool, sameAirline: false }).map((arrangement) => ({
+      ...arrangement,
+      id: `${arrangement.id}:${airline}`,
+    }));
+  });
+}
+
+/** Cheapest flights considered per hop; every connecting combination of them is tried. */
+export const OPTIONS_PER_HOP = 5;
+
+/** Most arrangements kept per routing, per destination airport and date — cheapest first. */
+export const ARRANGEMENTS_PER_ROUTING = 10;
+
+/** The cheapest few distinct flights of a route; empty when the route has none. */
+function topFlights(list: NormalizedFlight[] | undefined): NormalizedFlight[] {
+  return uniqueFlights(list ?? []).slice(0, OPTIONS_PER_HOP);
+}
+
+/** FNV-1a, so an arrangement id can name its flights without growing unbounded. */
+function shortHash(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * Arrangements for every viable routing, trying the cheapest few flights on
+ * each hop rather than only the cheapest one — so a feeder that misses the
+ * cheapest hub flight can still catch a later one, and more than one option per
+ * routing reaches the results. Ranking decides the order.
+ *
+ * Everyone who gathers shares one hub flight each way, and so does the hub's
+ * own group. A way out that cannot be flown — no flights, or a feeder that does
+ * not connect — produces nothing. The way back is best-effort: a group with no
+ * return flights keeps a null return, and return hops are not checked for
+ * connection.
  */
 export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
+  if (args.sameAirline) return buildSameAirlineArrangements(args);
+
   const { origins, gatheringAirport: hub, destination, pool, allow } = args;
   const active = origins.filter((o) => o.passengers > 0);
   if (active.length === 0) return [];
@@ -267,96 +379,120 @@ export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
   const date = args.departureDate;
   const returnDate = args.returnDate;
   const dest = destination.airport;
-
-  // Everyone who gathers shares the same hub flight in each direction.
-  const mainOut = cheapest(pool[poolKey(hub, dest, date)]);
-  const mainBack = returnDate ? cheapest(pool[poolKey(dest, hub, returnDate)]) : null;
-
-  // A group's options depend only on its own airport, so each is worked out once
-  // and shared by every routing that uses it.
-  const journeys = new Map<string, Journey | null>();
-  const journeyFor = (
-    origin: AirportCode,
-    direction: Journey["direction"],
-    routing: Routing,
-  ): Journey | null => {
-    const id = `${origin}|${direction}|${routing}`;
-    if (journeys.has(id)) return journeys.get(id)!;
-
-    let journey: Journey | null = null;
-    if (direction === "outbound") {
-      if (routing === "direct" || origin === hub) {
-        const main = cheapest(pool[poolKey(origin, dest, date)]);
-        if (main) journey = { direction, routing: "direct", feeder: null, main };
-      } else {
-        const feeder = cheapest(pool[poolKey(origin, hub, date)]);
-        if (feeder && mainOut && flightsConnect(feeder, mainOut)) {
-          journey = { direction, routing, feeder, main: mainOut };
-        }
-      }
-    } else if (returnDate) {
-      if (routing === "direct" || origin === hub) {
-        const main = cheapest(pool[poolKey(dest, origin, returnDate)]);
-        if (main) journey = { direction, routing: "direct", feeder: null, main };
-      } else {
-        const feeder = cheapest(pool[poolKey(hub, origin, returnDate)]);
-        if (feeder && mainBack && flightsConnect(mainBack, feeder)) {
-          journey = { direction, routing, feeder, main: mainBack };
-        }
-      }
-    }
-
-    journeys.set(id, journey);
-    return journey;
-  };
+  const direct = (direction: Journey["direction"], main: NormalizedFlight): Journey => ({
+    direction,
+    routing: "direct",
+    feeder: null,
+    main,
+  });
 
   const arrangements: Arrangement[] = [];
 
   for (const routing of enumerateRoutings(active, hub, allow, returnDate !== null)) {
-    const legs: GroupLeg[] = [];
-    let viable = true;
+    const modeOf = (airport: AirportCode) => routing[airport]?.outbound ?? "direct";
+    const gathering = active.some((o) => o.airport !== hub && modeOf(o.airport) === "gather");
 
-    for (const origin of active) {
-      const mode = routing[origin.airport] ?? { outbound: "direct", return: null };
+    // The shared hub flights; without anyone gathering there is nothing to share.
+    const mainsOut: (NormalizedFlight | null)[] = gathering
+      ? topFlights(pool[poolKey(hub, dest, date)])
+      : [null];
+    if (mainsOut.length === 0) continue;
+    const backs = gathering && returnDate ? topFlights(pool[poolKey(dest, hub, returnDate)]) : [];
+    const mainsBack: (NormalizedFlight | null)[] = backs.length > 0 ? backs : [null];
 
-      const outbound = journeyFor(origin.airport, "outbound", mode.outbound);
-      const back = returnDate
-        ? journeyFor(origin.airport, "return", mode.return ?? "direct")
-        : null;
-      if (!outbound || (returnDate && !back)) {
-        viable = false;
-        break;
+    const candidates = new Map<string, Arrangement>();
+
+    for (const mainOut of mainsOut) {
+      for (const mainBack of mainsBack) {
+        /** Every way one group can fly this routing with these hub flights. */
+        const legOptions = (origin: OriginGroup): GroupLeg[] => {
+          const airport = origin.airport;
+          const gathers = airport !== hub && modeOf(airport) === "gather";
+
+          let outs: Journey[];
+          if (airport === hub && mainOut) outs = [direct("outbound", mainOut)];
+          else if (!gathers) outs = topFlights(pool[poolKey(airport, dest, date)]).map((f) => direct("outbound", f));
+          else {
+            outs = topFlights(pool[poolKey(airport, hub, date)])
+              .filter((feeder) => flightsConnect(feeder, mainOut!))
+              .map((feeder) => ({ direction: "outbound", routing: "gather", feeder, main: mainOut! }));
+          }
+
+          let backsFor: (Journey | null)[] = [null];
+          if (returnDate) {
+            let options: Journey[];
+            if (airport === hub && gathering) options = mainBack ? [direct("return", mainBack)] : [];
+            else if (!gathers) options = topFlights(pool[poolKey(dest, airport, returnDate)]).map((f) => direct("return", f));
+            else if (mainBack) {
+              const feeders = topFlights(pool[poolKey(hub, airport, returnDate)]);
+              options = (feeders.length > 0 ? feeders : [null]).map((feeder) => ({
+                direction: "return",
+                routing: "gather",
+                feeder,
+                main: mainBack,
+              }));
+            } else options = [];
+            if (options.length > 0) backsFor = options;
+          }
+
+          return outs.flatMap((outbound) =>
+            backsFor.map((back) => ({
+              origin: airport,
+              outbound,
+              return: back,
+              passengers: origin.passengers,
+            })),
+          );
+        };
+
+        // Group by group, keeping only the cheapest partial plans so the
+        // combinations stay bounded however many groups there are.
+        let partials: { legs: GroupLeg[]; price: number }[] = [{ legs: [], price: 0 }];
+        for (const origin of active) {
+          const options = legOptions(origin);
+          partials = partials
+            .flatMap((partial) =>
+              options.map((leg) => ({
+                legs: [...partial.legs, leg],
+                price: partial.price + pricePerHeadOf(leg) * leg.passengers,
+              })),
+            )
+            .sort((a, b) => a.price - b.price)
+            .slice(0, ARRANGEMENTS_PER_ROUTING);
+          if (partials.length === 0) break;
+        }
+
+        for (const { legs } of partials) {
+          const shape = legs
+            .map((l) => `${l.origin}${l.outbound.routing === "gather" ? ">" : "-"}`)
+            .join("");
+          const flights = legs.flatMap(legFlights).map(flightKey).join("|");
+          const id = `${dest}:${date}:${shape}:${shortHash(flights)}`;
+          if (candidates.has(id)) continue;
+
+          candidates.set(id, {
+            id,
+            destination,
+            gatheringAirport: hub,
+            departureDate: date,
+            returnDate,
+            legs,
+            totals: totalsOf(legs, hub),
+            score: 0,
+            indices: { price: 0, hour: null },
+          });
+        }
       }
-
-      legs.push({
-        origin: origin.airport,
-        outbound,
-        return: back,
-        passengers: origin.passengers,
-      });
     }
 
-    if (!viable || legs.length === 0) continue;
-
-    const symbol = (journey: Journey | null) =>
-      journey === null ? "" : journey.routing === "gather" ? ">" : "-";
-
-    arrangements.push({
-      id: `${dest}:${date}:${legs
-        .map((l) => `${l.origin}${symbol(l.outbound)}${symbol(l.return)}`)
-        .join("")}`,
-      destination,
-      gatheringAirport: hub,
-      departureDate: date,
-      returnDate,
-      legs,
-      totals: totalsOf(legs, hub),
-      score: 0,
-      indices: { price: 0, hour: null },
-    });
+    arrangements.push(
+      ...[...candidates.values()]
+        .sort((a, b) => a.totals.totalPrice - b.totals.totalPrice)
+        .slice(0, ARRANGEMENTS_PER_ROUTING),
+    );
   }
 
-  return arrangements;
+  return uniqueArrangements(arrangements);
 }
 
 /* ── Scoring ─────────────────────────────────────────────────────────────── */

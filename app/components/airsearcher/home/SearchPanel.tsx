@@ -1,11 +1,12 @@
 "use client";
 
 import Button from "@/framework/ui/buttons/Button";
+import Input from "@/framework/ui/input/Input";
 import Text from "@/framework/ui/iconText/Text";
 import { useApp } from "@/framework/ui/context/AppContext";
 import { border, colorSecondary, grayMid, radiusBig, shadow } from "@/config/theme";
 import { describeCost, explainCost, needsConfirmation } from "@/lib/airsearcher/quota";
-import { previewCost } from "@/lib/airsearcher/search";
+import { previewCost, usesSerpApi } from "@/lib/airsearcher/search";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 import DateField, { dateError } from "./DateField";
 import DepartureDropdown from "./DepartureDropdown";
@@ -127,6 +128,30 @@ export default function SearchPanel({
 
       <DateField query={query} onChange={onChange} onOpenCalendar={onOpenCalendar} />
 
+      <label className="flex cursor-pointer items-center gap-2">
+        <Input
+          type="checkbox"
+          checked={query.sameAirline === true}
+          onChange={() => onChange({ sameAirline: !query.sameAirline })}
+        />
+        <Text size="small" value="Same airline for all flights" className="text-gray-800" />
+      </label>
+
+      {query.dateMode === "advanced" && (
+        <label className="flex cursor-pointer items-center gap-2">
+          <Input
+            type="checkbox"
+            checked={query.rangeWithSerpApi === true}
+            onChange={() => onChange({ rangeWithSerpApi: !query.rangeWithSerpApi })}
+          />
+          <Text
+            size="small"
+            value="Also search SerpApi for this date range"
+            className="text-gray-800"
+          />
+        </label>
+      )}
+
       <div
         className={`flex flex-wrap items-center justify-between gap-3 border-t ${grayMid.border} pt-4`}
       >
@@ -135,7 +160,9 @@ export default function SearchPanel({
           value={
             cached
               ? "Reusing saved results — 0 SerpApi requests"
-              : `This search will use ${describeCost(cost)}`
+              : usesSerpApi(query)
+                ? `This search will use ${describeCost(cost)}`
+                : "Date ranges are searched with Travelpayouts only — 0 SerpApi requests"
           }
           className={cached ? colorSecondary.text : "text-gray-500"}
         />

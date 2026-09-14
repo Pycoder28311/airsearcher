@@ -13,8 +13,10 @@ import { hourValue, priceIndex, normalizeWeights } from "@/lib/airsearcher/ranki
 import {
   buildArrangements,
   enumerateRoutings,
+  ARRANGEMENTS_PER_ROUTING,
   poolKey,
   scoreArrangements,
+  uniqueArrangements,
   type FlightPool,
 } from "@/lib/airsearcher/grouping";
 import {
@@ -29,7 +31,12 @@ import {
   normalizeSerpApiResponse,
   poolFromRecords,
 } from "@/lib/airsearcher/serpApi";
+import { googleFlightsUrl } from "@/lib/airsearcher/links";
+import { applyScopedFilters } from "@/lib/airsearcher/filtering";
+import { DEFAULT_FILTERS } from "@/lib/airsearcher/config/filters";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
+import { usesSerpApi } from "@/lib/airsearcher/search";
+import { normalizeTravelpayoutsResponse } from "@/lib/airsearcher/travelpayouts";
 import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/storage";
 import { toggleAirport, selectCity } from "@/lib/airsearcher/mapSelection";
 import { mockFlightsFor, mockPool } from "@/lib/airsearcher/mockFlights";
@@ -37,7 +44,7 @@ import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
 import { MIN_GATHER_BUFFER_MINUTES } from "@/lib/airsearcher/config/constants";
 import { EUROPE_CITIES_BY_ID } from "@/data/europeCities";
 import { airportByCode } from "@/data/places";
-import type { NormalizedFlight, SearchQuery } from "@/lib/airsearcher/types";
+import { stopAirportsOf, type NormalizedFlight, type SearchQuery } from "@/lib/airsearcher/types";
 
 let passed = 0;
 function check(name: string, fn: () => void): void {
@@ -99,14 +106,11 @@ check("enumerateRoutings yields 2^(n-1) one-way and never routes the hub to itse
   }
 });
 
-check("enumerateRoutings routes each direction separately on a round trip", () => {
+check("enumerateRoutings uses one routing for both directions on a round trip", () => {
   const routings = enumerateRoutings(ORIGINS, "ATH", { direct: true, gather: true }, true);
-  assert.equal(routings.length, 16);
-  assert.ok(
-    routings.some((r) => r.SKG.outbound === "direct" && r.SKG.return === "gather"),
-    "going direct and coming back via the hub must be a candidate",
-  );
+  assert.equal(routings.length, 4);
   for (const routing of routings) {
+    assert.equal(routing.SKG.return, routing.SKG.outbound);
     assert.deepEqual(routing.ATH, { outbound: "direct", return: "direct" });
   }
 });
@@ -329,7 +333,7 @@ check("mock data is deterministic for the same route and date", () => {
   assert.ok(a.length >= 8);
 });
 
-check("buildArrangements produces one arrangement per viable routing", () => {
+check("buildArrangements keeps several options per viable routing, within the cap", () => {
   const arrangements = buildArrangements({
     origins: ORIGINS,
     gatheringAirport: "ATH",
@@ -340,11 +344,12 @@ check("buildArrangements produces one arrangement per viable routing", () => {
     allow: { direct: true, gather: true },
   });
   assert.ok(arrangements.length > 0, "expected at least one arrangement");
-  assert.ok(arrangements.length <= 16);
+  assert.ok(arrangements.length > 4, "more than the cheapest option per routing");
+  assert.ok(arrangements.length <= 4 * ARRANGEMENTS_PER_ROUTING);
 
   for (const arrangement of arrangements) {
     assert.equal(arrangement.legs.length, 3);
-    assert.ok(arrangement.legs.every((leg) => leg.return !== null), "a round trip always returns");
+    assert.ok(arrangement.legs.every((leg) => leg.return !== null), "every mock route has return flights");
     assert.equal(arrangement.totals.passengers, 20);
     assert.ok(arrangement.totals.totalPrice > 0);
   }
@@ -368,6 +373,8 @@ check("a gather leg is rejected when the feeder does not connect in time", () =>
   last.arrival.time = landing;
 
   tightPool[poolKey("SKG", "ATH", "2026-09-14")] = [tightFeeder];
+  // The only hub flight, so no later one can rescue the connection.
+  tightPool[poolKey("ATH", "BER", "2026-09-14")] = [mainList[0]];
 
   const arrangements = buildArrangements({
     origins: [ORIGINS[0], ORIGINS[1]],
@@ -430,7 +437,14 @@ check("a priority date lifts a score without overriding a much better one", () =
 /* ── Per-direction routing (the London case) ────────────────────────────── */
 
 /** One single-segment flight with exact clock times, for hand-built pools. */
-function flight(from: string, to: string, departs: string, lands: string, price: number): NormalizedFlight {
+function flight(
+  from: string,
+  to: string,
+  departs: string,
+  lands: string,
+  price: number,
+  airline = "Fixture Air",
+): NormalizedFlight {
   return normalizeSerpApiResponse({
     best_flights: [
       {
@@ -438,8 +452,8 @@ function flight(from: string, to: string, departs: string, lands: string, price:
           {
             departure_airport: { id: from, name: from, time: departs },
             arrival_airport: { id: to, name: to, time: lands },
-            airline: "Fixture Air",
-            flight_number: `FX ${from}${to}`,
+            airline,
+            flight_number: `${airline} ${from}${to}`,
           },
         ],
         price,
@@ -478,39 +492,46 @@ function londonArrangements(pool: FlightPool, returnDate: string | null = BACK) 
   });
 }
 
-check("a group with no direct way back returns via the gathering airport", () => {
+check("a group with no return flights still appears, without a return", () => {
   const arrangements = londonArrangements(londonPool());
-  assert.ok(arrangements.length > 0);
-  for (const arrangement of arrangements) {
-    const skg = arrangement.legs.find((leg) => leg.origin === "SKG")!;
-    assert.equal(skg.return?.routing, "gather");
-    assert.equal(skg.return?.feeder?.outbound.segments[0].departure.airport, "ATH");
-  }
-});
-
-check("going direct and coming back via the hub is priced from its own flights", () => {
-  const mixed = londonArrangements(londonPool()).find(
+  const direct = arrangements.find(
     (a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === "direct",
   )!;
-  assert.ok(mixed, "direct out, via ATH back must be offered");
-  // ATH: 2 x (100 + 90). SKG: 2 x (80 out + 90 STN->ATH + 40 ATH->SKG).
-  assert.equal(mixed.totals.totalPrice, 2 * 190 + 2 * 210);
+  assert.ok(direct, "SKG direct is kept although there is no STN -> SKG");
+  assert.equal(direct.legs.find((leg) => leg.origin === "SKG")!.return, null);
+
+  const gather = arrangements.find(
+    (a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === "gather",
+  )!;
+  const skg = gather.legs.find((leg) => leg.origin === "SKG")!;
+  assert.equal(skg.return?.routing, "gather", "via ATH out means via ATH back");
 });
 
-check("a round trip with no way back for one group yields nothing", () => {
+check("a group's price counts only the flights it has", () => {
+  const arrangements = londonArrangements(londonPool());
+  const bySkg = (routing: string) =>
+    arrangements.find(
+      (a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === routing,
+    )!;
+  // ATH: 2 x (100 + 90). SKG direct: 2 x 80, no return flight.
+  assert.equal(bySkg("direct").totals.totalPrice, 2 * 190 + 2 * 80);
+  // SKG via ATH: 2 x (30 + 100 out, 90 + 40 back).
+  assert.equal(bySkg("gather").totals.totalPrice, 2 * 190 + 2 * 260);
+});
+
+check("a missing return does not remove the arrangement", () => {
   const pool = londonPool();
   delete pool[poolKey("ATH", "SKG", BACK)];
-  assert.equal(londonArrangements(pool).length, 0);
-  assert.ok(londonArrangements(pool, null).length > 0, "one-way still works without returns");
+  const arrangements = londonArrangements(pool);
+  assert.equal(arrangements.length, 2);
 });
 
-check("a return feeder leaving before the main flight lands is rejected", () => {
+check("return hops are not checked for connection", () => {
   const pool = londonPool();
-  // Lands in ATH at 17:00; leaving for SKG at 18:00 is inside the 90 minute buffer.
   pool[poolKey("ATH", "SKG", BACK)] = [
     flight("ATH", "SKG", `${BACK} 18:00`, `${BACK} 19:00`, 40),
   ];
-  assert.equal(londonArrangements(pool).length, 0);
+  assert.equal(londonArrangements(pool).length, 2);
 });
 
 check("each return is matched to flights from its own return date", () => {
@@ -623,6 +644,253 @@ check("a search saved in the old leg shape still loads, flights unchanged", () =
   } finally {
     delete g.window;
   }
+});
+
+check("Travelpayouts options normalize with arrival in the destination's local time", () => {
+  const flights = normalizeTravelpayoutsResponse(
+    {
+      success: true,
+      data: [
+        {
+          origin: "LON",
+          destination: "ATH",
+          origin_airport: "STN",
+          destination_airport: "ATH",
+          price: 54,
+          airline: "FR",
+          flight_number: "1234",
+          departure_at: "2026-10-04T13:00:00+01:00",
+          transfers: 0,
+          duration_to: 240,
+        },
+        // Another London airport is not this route.
+        {
+          origin_airport: "LTN",
+          destination_airport: "ATH",
+          price: 20,
+          departure_at: "2026-10-04T08:00:00+01:00",
+          duration_to: 230,
+        },
+      ],
+    },
+    "STN",
+    "ATH",
+  );
+
+  assert.equal(flights.length, 1);
+  const [f] = flights;
+  assert.equal(f.price, 54);
+  assert.equal(f.airline.name, "FR");
+  assert.equal(f.outbound.segments[0].departure.time, "2026-10-04 13:00");
+  // 13:00 in London (UTC+1) plus 4 hours lands at 19:00 in Athens (UTC+3).
+  assert.equal(f.outbound.segments[0].arrival.time, "2026-10-04 19:00");
+  assert.equal(f.outbound.stops, 0);
+});
+
+check("same airline keeps only arrangements flown entirely by one airline", () => {
+  const pool: FlightPool = {
+    [poolKey("ATH", "STN", OUT)]: [
+      flight("ATH", "STN", `${OUT} 10:00`, `${OUT} 12:00`, 100, "Aegean"),
+      flight("ATH", "STN", `${OUT} 11:00`, `${OUT} 13:00`, 60, "Ryanair"),
+    ],
+    [poolKey("SKG", "STN", OUT)]: [flight("SKG", "STN", `${OUT} 09:00`, `${OUT} 12:00`, 80, "Ryanair")],
+    [poolKey("SKG", "ATH", OUT)]: [flight("SKG", "ATH", `${OUT} 06:00`, `${OUT} 07:00`, 30, "Aegean")],
+    [poolKey("STN", "ATH", BACK)]: [flight("STN", "ATH", `${BACK} 13:00`, `${BACK} 17:00`, 90, "Aegean")],
+    [poolKey("ATH", "SKG", BACK)]: [
+      flight("ATH", "SKG", `${BACK} 19:00`, `${BACK} 20:00`, 40, "Aegean"),
+      flight("ATH", "SKG", `${BACK} 19:30`, `${BACK} 20:30`, 10, "Ryanair"),
+    ],
+  };
+  const args = {
+    origins: PAIR,
+    gatheringAirport: "ATH",
+    destination: { cityId: "uk-london", airport: "STN" },
+    pool,
+    departureDate: OUT,
+    returnDate: BACK,
+    allow: { direct: true, gather: true },
+  };
+
+  const mixed = buildArrangements(args);
+  assert.ok(mixed.some((a) => a.totals.airlines.length > 1), "without the option airlines mix");
+
+  const same = buildArrangements({ ...args, sameAirline: true });
+  assert.ok(same.length > 0);
+  for (const arrangement of same) {
+    assert.equal(arrangement.totals.airlines.length, 1);
+  }
+  assert.equal(new Set(same.map((a) => a.id)).size, same.length, "ids stay unique");
+});
+
+check("the same-airline option changes the search key only when it is on", () => {
+  assert.equal(searchKeyOf({ ...QUERY, sameAirline: false }), searchKeyOf(QUERY));
+  assert.notEqual(searchKeyOf({ ...QUERY, sameAirline: true }), searchKeyOf(QUERY));
+});
+
+check("a feeder that misses the cheapest hub flight still catches a later one", () => {
+  const day = "2026-10-01";
+  const arrangements = buildArrangements({
+    origins: [{ airport: "HER", passengers: 1 }],
+    gatheringAirport: "ATH",
+    destination: { cityId: "ro-bucharest", airport: "OTP" },
+    pool: {
+      [poolKey("HER", "OTP", day)]: [flight("HER", "OTP", `${day} 12:00`, `${day} 14:00`, 200)],
+      [poolKey("HER", "ATH", day)]: [flight("HER", "ATH", `${day} 09:00`, `${day} 10:00`, 40)],
+      [poolKey("ATH", "OTP", day)]: [
+        // Cheapest, but leaves 30 minutes after the feeder lands.
+        flight("ATH", "OTP", `${day} 10:30`, `${day} 12:00`, 50),
+        flight("ATH", "OTP", `${day} 15:00`, `${day} 16:30`, 70),
+      ],
+    },
+    departureDate: day,
+    returnDate: null,
+    allow: { direct: true, gather: true },
+  });
+
+  const viaAth = arrangements.filter((a) => a.legs[0].outbound.routing === "gather");
+  assert.equal(viaAth.length, 1, "HER -> ATH -> OTP must be offered");
+  assert.equal(viaAth[0].legs[0].outbound.main.price, 70);
+  assert.equal(viaAth[0].totals.totalPrice, 110);
+  assert.ok(arrangements.some((a) => a.legs[0].outbound.routing === "direct"));
+});
+
+check("the same flight listed twice by the provider is kept once", () => {
+  const option = serpApiFixture("ATH", "BER", "2026-09-14", 90).best_flights[0];
+  const plan = planSearches(QUERY);
+  const outbound = planRequestBatches(plan).find((batch) => batch.direction === "outbound")!;
+  const records = flightRecordsFromResponses(plan, [
+    // Google can list one option in both sections, at a higher price in one.
+    { batch: outbound, data: { best_flights: [option], other_flights: [{ ...option, price: 120 }] } },
+  ]);
+  const route = records.find((r) => r.from === "ATH" && r.to === "BER")!;
+  assert.equal(route.flights.length, 1);
+  assert.equal(route.flights[0].price, 90);
+});
+
+check("one ticket with a stop and the same flights as two tickets show once", () => {
+  const day = "2026-10-01";
+  const feeder = flight("HER", "ATH", `${day} 09:00`, `${day} 10:00`, 40);
+  const main = flight("ATH", "OTP", `${day} 12:00`, `${day} 13:30`, 70);
+  // The same two flights sold as one ticket, a little cheaper.
+  const oneTicket: NormalizedFlight = {
+    ...structuredClone(feeder),
+    id: "one-ticket",
+    price: 100,
+    outbound: {
+      segments: [feeder.outbound.segments[0], main.outbound.segments[0]],
+      layovers: [],
+      stops: 1,
+      totalDurationMinutes: 270,
+    },
+  };
+
+  const arrangements = buildArrangements({
+    origins: [{ airport: "HER", passengers: 1 }],
+    gatheringAirport: "ATH",
+    destination: { cityId: "ro-bucharest", airport: "OTP" },
+    pool: {
+      [poolKey("HER", "OTP", day)]: [oneTicket, structuredClone(oneTicket)],
+      [poolKey("HER", "ATH", day)]: [feeder],
+      [poolKey("ATH", "OTP", day)]: [main],
+    },
+    departureDate: day,
+    returnDate: null,
+    allow: { direct: true, gather: true },
+  });
+
+  assert.equal(arrangements.length, 1);
+  assert.equal(arrangements[0].totals.totalPrice, 100);
+  assert.equal(arrangements[0].legs[0].outbound.routing, "direct");
+});
+
+check("stop airports come from layovers, else from segment boundaries", () => {
+  const day = "2026-10-01";
+  const first = flight("HER", "ATH", `${day} 09:00`, `${day} 10:00`, 40);
+  const second = flight("ATH", "OTP", `${day} 12:00`, `${day} 13:30`, 70);
+  const withoutLayovers: NormalizedFlight = {
+    ...first,
+    outbound: {
+      segments: [first.outbound.segments[0], second.outbound.segments[0]],
+      layovers: [],
+      stops: 1,
+      totalDurationMinutes: 270,
+    },
+  };
+  assert.deepEqual(stopAirportsOf(withoutLayovers), ["ATH"]);
+  assert.deepEqual(stopAirportsOf(first), []);
+});
+
+check("date ranges use SerpApi only when asked, and the choice is part of the key", () => {
+  const range: SearchQuery = {
+    ...QUERY,
+    dateMode: "advanced",
+    departureDate: null,
+    returnDate: null,
+    dateRange: { start: "2026-09-01", end: "2026-09-03" },
+    tripDurationDays: 7,
+  };
+  assert.equal(usesSerpApi(QUERY), true);
+  assert.equal(usesSerpApi(range), false);
+  assert.equal(usesSerpApi({ ...range, rangeWithSerpApi: true }), true);
+  assert.notEqual(searchKeyOf({ ...range, rangeWithSerpApi: true }), searchKeyOf(range));
+  // Irrelevant for exact dates, so it must not split their saved results.
+  assert.equal(searchKeyOf({ ...QUERY, rangeWithSerpApi: true }), searchKeyOf(QUERY));
+});
+
+check("a Google Flights link is built from the flight's route and day", () => {
+  const url = new URL(googleFlightsUrl(flight("HER", "ATH", "2026-10-01 09:00", "2026-10-01 10:00", 40))!);
+  assert.equal(url.origin + url.pathname, "https://www.google.com/travel/flights");
+  assert.equal(url.searchParams.get("q"), "Flights from HER to ATH on 2026-10-01 one way");
+});
+
+check("the airline filter keeps only results flown entirely by one chosen airline", () => {
+  const day = "2026-10-01";
+  const pool: FlightPool = {
+    [poolKey("HER", "OTP", day)]: [flight("HER", "OTP", `${day} 12:00`, `${day} 14:00`, 200, "Aegean")],
+    [poolKey("HER", "ATH", day)]: [flight("HER", "ATH", `${day} 09:00`, `${day} 10:00`, 40, "Sky Express")],
+    [poolKey("ATH", "OTP", day)]: [flight("ATH", "OTP", `${day} 15:00`, `${day} 16:30`, 70, "Aegean")],
+  };
+  const arrangements = buildArrangements({
+    origins: [{ airport: "HER", passengers: 1 }],
+    gatheringAirport: "ATH",
+    destination: { cityId: "ro-bucharest", airport: "OTP" },
+    pool,
+    departureDate: day,
+    returnDate: null,
+    allow: { direct: true, gather: true },
+  });
+  assert.equal(arrangements.length, 2);
+
+  const onlyAegean = { ...DEFAULT_FILTERS, airlineMode: "include" as const, airlines: ["Aegean"] };
+  const kept = applyScopedFilters(arrangements, onlyAegean);
+  assert.equal(kept.length, 1, "the via-ATH result also uses Sky Express");
+  assert.equal(kept[0].legs[0].outbound.routing, "direct");
+
+  // Either airline alone qualifies; the via-ATH result mixes the two, so it does not.
+  const both = { ...onlyAegean, airlines: ["Aegean", "Sky Express"] };
+  const eitherOne = applyScopedFilters(arrangements, both);
+  assert.equal(eitherOne.length, 1);
+  assert.equal(eitherOne[0].legs[0].outbound.routing, "direct");
+
+  const notSky = { ...DEFAULT_FILTERS, airlineMode: "exclude" as const, airlines: ["Sky Express"] };
+  assert.equal(applyScopedFilters(arrangements, notSky).length, 1);
+});
+
+check("the results pipeline never lists the same arrangement twice", () => {
+  const base = buildArrangements({
+    origins: ORIGINS,
+    gatheringAirport: "ATH",
+    destination: { cityId: "de-berlin", airport: "BER" },
+    pool: POOL,
+    departureDate: "2026-09-14",
+    returnDate: "2026-09-21",
+    allow: { direct: true, gather: true },
+  });
+  // A saved search from before de-duplication can hold copies under new ids.
+  const saved = [...base, ...base.map((a) => ({ ...a, id: `${a.id}:copy` }))];
+  const shown = applyScopedFilters(uniqueArrangements(saved), DEFAULT_FILTERS);
+  assert.equal(shown.length, base.length);
+  assert.equal(new Set(shown.map((a) => a.id)).size, shown.length);
 });
 
 console.log(`\n${passed} checks passed.`);

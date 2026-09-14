@@ -1,10 +1,11 @@
 "use client";
 
 import Text from "@/framework/ui/iconText/Text";
+import { uniqueFlights } from "@/lib/airsearcher/grouping";
 import { grayLight, grayMid, radius } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { formatClock, formatDate, formatDuration } from "@/lib/airsearcher/time";
-import type { FlightRecord, NormalizedFlight } from "@/lib/airsearcher/types";
+import { stopAirportsOf, type FlightRecord, type NormalizedFlight } from "@/lib/airsearcher/types";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import Dialog from "../common/Dialog";
 
@@ -41,7 +42,7 @@ function cells(flight: NormalizedFlight): string[] {
     formatClock(last?.arrival.time),
     formatDuration(flight.outbound.totalDurationMinutes),
     String(flight.outbound.stops),
-    flight.outbound.layovers.map((l) => l.airport).filter(Boolean).join(", ") || "—",
+    stopAirportsOf(flight).join(", ") || "—",
     flight.price === null ? "—" : `${flight.price} ${CURRENCY}`,
   ];
 }
@@ -119,7 +120,11 @@ export default function FlightDataDialog({
   open: boolean;
   onClose: () => void;
 }) {
-  const records = entry.records ?? [];
+  // Searches saved before duplicates were removed can still hold them.
+  const records = (entry.records ?? []).map((record) => ({
+    ...record,
+    flights: uniqueFlights(record.flights),
+  }));
   const totalFlights = records.reduce((sum, record) => sum + record.flights.length, 0);
 
   return (

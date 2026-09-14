@@ -73,19 +73,33 @@ export function matchesStops(
 }
 
 /**
- * Include: at least one in-scope flight is flown by a selected airline.
- * Exclude: none is.
+ * The airline of every segment of a flight. A flight with a stop can change
+ * airline between segments, so its combined "Multiple airlines" label says
+ * nothing about which ones — the segments do.
+ */
+function segmentAirlines(flight: NormalizedFlight): string[] {
+  const names = flight.outbound.segments.map((s) => s.airline ?? flight.airline.name);
+  return names.filter((name): name is string => Boolean(name));
+}
+
+/**
+ * Judged across a whole arrangement — every group's flights together.
+ *
+ * Include ("Only these"): every in-scope segment is on ONE of the selected
+ * airlines — all on the first, or all on the second — never a mix of them.
+ * Exclude ("Not these"): no in-scope segment is on any selected airline.
  */
 export function matchesAirlines(
-  set: LegFlightSet,
+  sets: LegFlightSet[],
   mode: "include" | "exclude",
   selected: string[],
   scope: FilterScope = "both",
 ): boolean {
   if (selected.length === 0) return true;
-  const names = flightsInScope(set, scope).map((f) => f.airline.name);
-  const hit = names.some((n) => n !== null && selected.includes(n));
-  return mode === "include" ? hit : !hit;
+  const names = sets.flatMap((set) => flightsInScope(set, scope).flatMap(segmentAirlines));
+  return mode === "include"
+    ? selected.some((airline) => names.every((name) => name === airline))
+    : !names.some((name) => selected.includes(name));
 }
 
 /** The hour a flight leaves, from its first segment. */
@@ -232,15 +246,9 @@ function flightSetPasses(
 ): boolean {
   const s = filters.scopes;
 
-  // Price is deliberately absent: it is judged once on the group total in
-  // `arrangementPasses`, never per group.
+  // Price and airlines are deliberately absent: both are judged once across the
+  // whole arrangement in `arrangementPasses`, never per group.
   if (skip !== "stops" && !matchesStops(set, filters.stops, s.stops)) {
-    return false;
-  }
-  if (
-    skip !== "airlines" &&
-    !matchesAirlines(set, filters.airlineMode, filters.airlines, s.airlines)
-  ) {
     return false;
   }
   if (skip !== "times") {
@@ -302,8 +310,9 @@ function flightSetPasses(
 
 /**
  * An arrangement survives only when every origin group's flights survive.
- * Price is the exception: it is judged on the group total, not per group,
- * because a filter on price means what the whole group pays.
+ * Price and airlines are the exceptions: they are judged on the whole
+ * arrangement, not per group, because a price filter means what the whole
+ * group pays and an airline choice means one airline for everyone.
  */
 function arrangementPasses(
   arrangement: Arrangement,
@@ -316,7 +325,15 @@ function arrangementPasses(
     if (total < min || total > max) return false;
   }
 
-  return flightSetsOf(arrangement).every((set) => flightSetPasses(set, filters, skip));
+  const sets = flightSetsOf(arrangement);
+  if (
+    skip !== "airlines" &&
+    !matchesAirlines(sets, filters.airlineMode, filters.airlines, filters.scopes.airlines)
+  ) {
+    return false;
+  }
+
+  return sets.every((set) => flightSetPasses(set, filters, skip));
 }
 
 /** Returns a new array holding only the arrangements that pass every filter. */
@@ -351,10 +368,12 @@ export function countsFor(
     arrangementPasses(a, filters, "airlines"),
   );
   for (const name of airlinesIn(arrangements)) {
+    // What ticking this airline would leave: "Only these" adds it to the chosen
+    // airlines; "Not these" rules out this one airline.
+    const selection =
+      filters.airlineMode === "include" ? [...new Set([...filters.airlines, name])] : [name];
     counts[`airline:${name}`] = withoutAirlines.filter((a) =>
-      flightSetsOf(a).some((it) =>
-        matchesAirlines(it, filters.airlineMode, [name], filters.scopes.airlines),
-      ),
+      matchesAirlines(flightSetsOf(a), filters.airlineMode, selection, filters.scopes.airlines),
     ).length;
   }
 
@@ -374,11 +393,15 @@ export function countsFor(
   return counts;
 }
 
-/** Every airline name appearing anywhere in the given arrangements. */
+/** Every airline flying any segment in the given arrangements. */
 export function airlinesIn(arrangements: Arrangement[]): string[] {
   const names = new Set<string>();
   for (const arrangement of arrangements) {
-    for (const name of arrangement.totals.airlines) names.add(name);
+    for (const set of flightSetsOf(arrangement)) {
+      for (const flight of flightsInScope(set, "both")) {
+        for (const name of segmentAirlines(flight)) names.add(name);
+      }
+    }
   }
   return [...names].sort();
 }

@@ -43,5 +43,8 @@ export function searchKeyOf(query: SearchQuery): string {
     `hub=${query.gatheringAirport.trim().toUpperCase()}`,
     `trip=${query.tripType}`,
     `dates=${dates}`,
+    // Only added when on, so keys of searches saved without it stay the same.
+    ...(query.sameAirline ? ["airline=same"] : []),
+    ...(query.dateMode === "advanced" && query.rangeWithSerpApi ? ["range=serpapi"] : []),
   ].join(";");
 }

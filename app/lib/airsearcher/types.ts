@@ -82,6 +82,24 @@ export interface NormalizedFlight {
 }
 
 /**
+ * The airports a flight stops at, in order. Taken from the layovers when the
+ * provider lists them, otherwise from where one segment ends and the next
+ * begins. Empty when neither is known — Travelpayouts sends only a count.
+ */
+export function stopAirportsOf(flight: NormalizedFlight): AirportCode[] {
+  const fromLayovers = flight.outbound.layovers
+    .map((l) => l.airport)
+    .filter((code): code is AirportCode => Boolean(code));
+  if (fromLayovers.length > 0) return fromLayovers;
+
+  const segments = flight.outbound.segments;
+  return segments
+    .slice(0, -1)
+    .map((s) => s.arrival.airport)
+    .filter((code): code is AirportCode => Boolean(code));
+}
+
+/**
  * One bookable option for a single origin/destination pair: a flight in one-way
  * mode, or an outbound/return pair in round-trip mode. Filtering and ranking
  * both operate on this unit.
@@ -148,7 +166,7 @@ export function journeyFlights(journey: Journey): NormalizedFlight[] {
 export interface GroupLeg {
   origin: AirportCode;
   outbound: Journey;
-  /** null only on a one-way trip — a round trip always has a way back. */
+  /** null on a one-way trip, or when no return flights were found for the group. */
   return: Journey | null;
   passengers: number;
 }
@@ -216,6 +234,16 @@ export interface SearchQuery {
   excludedDates: string[];
   /** ISO date -> 1..3. Higher breaks ties in favour of that date. */
   priorityDates: Record<string, number>;
+  /**
+   * Only results where every flight of every group is on one airline. Absent on
+   * searches saved before the option existed, which were built without it.
+   */
+  sameAirline?: boolean;
+  /**
+   * Date ranges only: also search SerpApi, not just Travelpayouts. Off unless
+   * asked for, because SerpApi costs a request per candidate date.
+   */
+  rangeWithSerpApi?: boolean;
 }
 
 /** Which routings the search is allowed to consider. */

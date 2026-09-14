@@ -51,6 +51,16 @@ export interface StoredSearch {
    * raw data was kept, so always treat it as optional.
    */
   records?: FlightRecord[];
+  /**
+   * The same search answered from Travelpayouts, built by the same pipeline.
+   * Absent on entries saved before it existed; `error` is set when the call
+   * failed, so the SerpApi results are never lost because of it.
+   */
+  travelpayouts?: {
+    arrangements: Arrangement[];
+    records?: FlightRecord[];
+    error?: string;
+  };
 }
 
 /** Ranking preferences plus the calendar's date rules, stored together. */
@@ -199,16 +209,20 @@ export function saveSearch(entry: StoredSearch): void {
   if (writeJson(SEARCHES_KEY, next)) return;
 
   // Keep the newest search's raw data, drop everyone else's.
-  const slimOthers = next.map((e, index) =>
-    index === 0 ? e : { ...e, records: undefined },
-  );
+  const slimOthers = next.map((e, index) => (index === 0 ? e : withoutRecords(e)));
   if (writeJson(SEARCHES_KEY, slimOthers)) return;
 
   // Still too big: keep the arrangements, lose the raw data entirely.
-  writeJson(
-    SEARCHES_KEY,
-    next.map((e) => ({ ...e, records: undefined })),
-  );
+  writeJson(SEARCHES_KEY, next.map(withoutRecords));
+}
+
+/** An entry with every provider's raw flight records removed. */
+function withoutRecords(entry: StoredSearch): StoredSearch {
+  return {
+    ...entry,
+    records: undefined,
+    travelpayouts: entry.travelpayouts && { ...entry.travelpayouts, records: undefined },
+  };
 }
 
 export function removeSearch(id: string): void {
