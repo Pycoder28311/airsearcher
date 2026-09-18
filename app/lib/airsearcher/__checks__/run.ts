@@ -23,7 +23,9 @@ import {
   planRequestBatches,
   planSearches,
   candidateDates,
+  returnDatesFor,
 } from "@/lib/airsearcher/queryPlan";
+import { eachDayInRange } from "@/lib/airsearcher/time";
 import { costOf, explainCost } from "@/lib/airsearcher/quota";
 import {
   flightRecordsFromResponses,
@@ -196,6 +198,40 @@ check("three round-trip candidate dates cost six combined requests", () => {
     planRequestBatches(plan).map((batch) => batch.departureId),
     ["ATH,HER,SKG", "ATH,HER,SKG", "ATH,HER,SKG", "ATH,BER", "ATH,BER", "ATH,BER"],
   );
+});
+
+const FLEXIBLE: SearchQuery = {
+  ...QUERY,
+  dateMode: "advanced",
+  departureDate: null,
+  returnDate: null,
+  dateRange: { start: "2026-09-01", end: "2026-09-10" },
+  tripDurationDays: 7,
+  tripLengthRange: { min: 3, max: 7 },
+};
+
+check("an open trip length keeps the whole trip inside the window", () => {
+  // The last departure that can still come back 3 nights later by the 10th.
+  assert.deepEqual(candidateDates(FLEXIBLE), eachDayInRange("2026-09-01", "2026-09-07"));
+  assert.deepEqual(returnDatesFor(FLEXIBLE, "2026-09-01"), eachDayInRange("2026-09-04", "2026-09-08"));
+  assert.deepEqual(returnDatesFor(FLEXIBLE, "2026-09-06"), ["2026-09-09", "2026-09-10"]);
+  for (const search of planSearches(FLEXIBLE)) {
+    assert.ok(search.date >= "2026-09-01" && search.date <= "2026-09-10");
+  }
+});
+
+check("an open trip length costs at most one request per day each way", () => {
+  const plan = planSearches(FLEXIBLE);
+  // 7 departure days + 7 return days (4th..10th), never more than the window.
+  assert.equal(costOf(plan), 14);
+  const fixed = planSearches({ ...FLEXIBLE, tripLengthRange: null });
+  assert.ok(costOf(plan) <= costOf(fixed));
+});
+
+check("an open trip length skips excluded return dates and changes the key", () => {
+  const excluded = { ...FLEXIBLE, excludedDates: ["2026-09-05"] };
+  assert.ok(!returnDatesFor(excluded, "2026-09-01").includes("2026-09-05"));
+  assert.notEqual(searchKeyOf(FLEXIBLE), searchKeyOf({ ...FLEXIBLE, tripLengthRange: null }));
 });
 
 check("one-way searches only spend the outbound batch", () => {
@@ -567,7 +603,28 @@ check("each return is matched to flights from its own return date", () => {
 check("selecting a city selects all of its airports", () => {
   const london = EUROPE_CITIES_BY_ID["uk-london"];
   const selection = selectCity(london);
-  assert.equal(selection.airports.length, 4);
+  assert.deepEqual(selection.airports, london.airportCodes);
+  assert.ok(selection.airports.includes("LHR") && selection.airports.includes("LGW"));
+});
+
+check("a rural place keeps airports that belong to other cities", () => {
+  // Any UNESCO site or park listing an airport that belongs to a nearby city.
+  const place = Object.values(EUROPE_CITIES_BY_ID).find(
+    (city) =>
+      (city.kind === "unesco" || city.kind === "park") &&
+      city.airportCodes.length > 1 &&
+      city.airportCodes.some((code) => airportByCode(code)?.cityId !== city.id),
+  );
+  if (!place) return; // Only before the destination list has been generated.
+
+  const [first, second] = place.airportCodes.map((code) => airportByCode(code)!);
+  let selection = selectCity(place);
+  selection = toggleAirport(selection, first);
+  assert.equal(selection.cityId, place.id, "unticking a nearby airport must not leave the place");
+  assert.ok(!selection.airports.includes(first.code));
+  selection = toggleAirport(selection, first);
+  assert.equal(selection.cityId, place.id);
+  assert.ok(selection.airports.includes(first.code) && selection.airports.includes(second.code));
 });
 
 check("multi-select is confined to one city", () => {

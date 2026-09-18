@@ -14,6 +14,7 @@
 import type { AirportCode, OriginGroup, TripType } from "@/lib/airsearcher/types";
 import {
   DEFAULT_GATHERING_AIRPORT,
+  DEFAULT_PASSENGERS_PER_ORIGIN,
   GREEK_ORIGIN_DEFAULTS,
 } from "./constants";
 import {
@@ -109,9 +110,9 @@ export const DEFAULT_FILTERS: FilterState = {
   travelClass: "economy",
   lessEmissionsOnly: false,
   scopes: { ...DEFAULT_SCOPES },
-  departureAirports: GREEK_ORIGIN_DEFAULTS.map((airport, index) => ({
+  departureAirports: GREEK_ORIGIN_DEFAULTS.map((airport) => ({
     airport,
-    passengers: index === 0 ? 10 : 0,
+    passengers: DEFAULT_PASSENGERS_PER_ORIGIN,
   })),
   preferredGatheringAirport: DEFAULT_GATHERING_AIRPORT,
   priceWeight: DEFAULT_PRICE_LEVEL,

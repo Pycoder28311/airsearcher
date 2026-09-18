@@ -8,18 +8,25 @@ import SearchPanel from "@/components/airsearcher/home/SearchPanel";
 import SearchHistoryList from "@/components/airsearcher/home/SearchHistoryList";
 import AdvancedCalendarModal from "@/components/airsearcher/calendar/AdvancedCalendarModal";
 import MapModal from "@/components/airsearcher/map/MapModal";
-import { DEFAULT_GATHERING_AIRPORT, GREEK_ORIGIN_DEFAULTS } from "@/lib/airsearcher/config/constants";
+import {
+  DEFAULT_GATHERING_AIRPORT,
+  DEFAULT_PASSENGERS_PER_ORIGIN,
+  GREEK_ORIGIN_DEFAULTS,
+} from "@/lib/airsearcher/config/constants";
 import { loadFilters, loadPreferences, loadSearches, removeSearch, savePreferences, type StoredSearch } from "@/lib/airsearcher/storage";
 import { runSearch, SearchRequestError, usesSerpApi } from "@/lib/airsearcher/search";
 import { addDays, isoDate } from "@/lib/airsearcher/time";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 
-/** A sensible starting query: one passenger from each Greek airport, a fortnight away. */
+/** A sensible starting query: nine passengers from each Greek airport, a fortnight away. */
 function initialQuery(): SearchQuery {
   const departure = addDays(isoDate(new Date()), 14);
   return {
     destination: { cityId: "", airports: [] },
-    origins: GREEK_ORIGIN_DEFAULTS.map((airport) => ({ airport, passengers: 1 })),
+    origins: GREEK_ORIGIN_DEFAULTS.map((airport) => ({
+      airport,
+      passengers: DEFAULT_PASSENGERS_PER_ORIGIN,
+    })),
     gatheringAirport: DEFAULT_GATHERING_AIRPORT,
     tripType: "round-trip",
     dateMode: "exact",

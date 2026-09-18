@@ -5,7 +5,10 @@ import Button from "@/framework/ui/buttons/Button";
 import Input from "@/framework/ui/input/Input";
 import Text from "@/framework/ui/iconText/Text";
 import { colorRed, colorSecondary, grayMid, radius } from "@/config/theme";
-import { MAX_ADVANCED_RANGE_DAYS } from "@/lib/airsearcher/config/constants";
+import {
+  DEFAULT_TRIP_LENGTH_RANGE,
+  MAX_ADVANCED_RANGE_DAYS,
+} from "@/lib/airsearcher/config/constants";
 import { candidateDates, planSearches } from "@/lib/airsearcher/queryPlan";
 import { costOf, describeCost } from "@/lib/airsearcher/quota";
 import { addDays, daysBetween, formatDate, isoDate, parseIsoDate } from "@/lib/airsearcher/time";
@@ -26,7 +29,8 @@ const MODES: { value: PaintMode; label: string }[] = [
 
 /**
  * The advanced date search: a window the trip may start in, a fixed trip
- * length, dates to avoid, and dates to favour.
+ * length (or an open one, where the whole trip must fit in the window), dates
+ * to avoid, and dates to favour.
  *
  * Exclusions are absolute — an excluded date is never searched, so removing one
  * genuinely lowers the number of searches, which the footer shows live. Priorities
@@ -52,6 +56,12 @@ export default function AdvancedCalendarModal({
   const [mode, setMode] = useState<PaintMode>("range");
   const [range, setRange] = useState(query.dateRange);
   const [duration, setDuration] = useState(query.tripDurationDays ?? 7);
+  /** Whether the trip length is left open; the range survives unticking. */
+  const [flexible, setFlexible] = useState(Boolean(query.tripLengthRange));
+  const [lengthRange, setLengthRange] = useState<{ min: number; max: number }>(
+    query.tripLengthRange ?? DEFAULT_TRIP_LENGTH_RANGE,
+  );
+  const roundTrip = query.tripType === "round-trip";
   const [excluded, setExcluded] = useState<string[]>(query.excludedDates);
   const [priority, setPriority] = useState<Record<string, number>>(query.priorityDates);
   /** Set while the pointer is down, so a drag can paint several days. */
@@ -75,10 +85,11 @@ export default function AdvancedCalendarModal({
       dateMode: "advanced",
       dateRange: range,
       tripDurationDays: duration,
+      tripLengthRange: flexible ? lengthRange : null,
       excludedDates: excluded,
       priorityDates: priority,
     }),
-    [query, range, duration, excluded, priority],
+    [query, range, duration, flexible, lengthRange, excluded, priority],
   );
 
   const dates = candidateDates(draft);
@@ -145,7 +156,7 @@ export default function AdvancedCalendarModal({
       open={open}
       onClose={onClose}
       title="Advanced date search"
-      subtitle="Search a window of departure dates for a trip of fixed length."
+      subtitle="Search a window of departure dates for a trip of fixed or open length."
       width="max-w-3xl"
       footer={
         <>
@@ -182,6 +193,7 @@ export default function AdvancedCalendarModal({
                   dateMode: "advanced",
                   dateRange: range,
                   tripDurationDays: duration,
+                  tripLengthRange: flexible ? lengthRange : null,
                   excludedDates: excluded,
                   priorityDates: priority,
                 });
@@ -196,10 +208,51 @@ export default function AdvancedCalendarModal({
     >
       <div className="flex flex-col gap-5">
         <div className="flex flex-wrap items-end justify-between gap-4">
-          <label className="flex flex-col gap-1">
-            <Text size="very small" value="Trip length (nights)" className="text-gray-500" />
-            <Stepper value={duration} onChange={setDuration} min={1} max={60} label="night" />
-          </label>
+          <div className="flex flex-col gap-2">
+            {roundTrip && flexible ? (
+              <div className="flex flex-wrap gap-4">
+                <label className="flex flex-col gap-1">
+                  <Text size="very small" value="Shortest trip (nights)" className="text-gray-500" />
+                  <Stepper
+                    value={lengthRange.min}
+                    onChange={(min) => setLengthRange((current) => ({ ...current, min }))}
+                    min={1}
+                    max={lengthRange.max}
+                    label="night"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <Text size="very small" value="Longest trip (nights)" className="text-gray-500" />
+                  <Stepper
+                    value={lengthRange.max}
+                    onChange={(max) => setLengthRange((current) => ({ ...current, max }))}
+                    min={lengthRange.min}
+                    max={60}
+                    label="night"
+                  />
+                </label>
+              </div>
+            ) : (
+              <label className="flex flex-col gap-1">
+                <Text size="very small" value="Trip length (nights)" className="text-gray-500" />
+                <Stepper value={duration} onChange={setDuration} min={1} max={60} label="night" />
+              </label>
+            )}
+            {roundTrip && (
+              <label className="flex cursor-pointer items-center gap-2">
+                <Input
+                  type="checkbox"
+                  checked={flexible}
+                  onChange={() => setFlexible((current) => !current)}
+                />
+                <Text
+                  size="small"
+                  value="Unspecified trip length — find the best trip"
+                  className="text-gray-800"
+                />
+              </label>
+            )}
+          </div>
 
           <div className="flex flex-col gap-1">
             <Text size="very small" value="Clicking a day will…" className="text-gray-500" />
@@ -219,6 +272,14 @@ export default function AdvancedCalendarModal({
             </div>
           </div>
         </div>
+
+        {roundTrip && flexible && (
+          <Text
+            size="very small"
+            value="With an unspecified length the whole trip, return included, stays inside the range. Every day is still searched at most once each way, so this adds no SerpApi requests."
+            className="max-w-prose text-gray-400"
+          />
+        )}
 
         <Text
           size="very small"

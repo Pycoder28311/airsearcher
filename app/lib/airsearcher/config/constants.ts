@@ -24,6 +24,12 @@ export const DEFAULT_GATHERING_AIRPORT = "ATH";
 /** The three Greek airports the departure dropdown starts with. */
 export const GREEK_ORIGIN_DEFAULTS = ["ATH", "SKG", "HER"] as const;
 
+/** How many passengers each departure airport starts with. */
+export const DEFAULT_PASSENGERS_PER_ORIGIN = 9;
+
+/** The nights an unspecified-length trip may last, until the user changes them. */
+export const DEFAULT_TRIP_LENGTH_RANGE = { min: 3, max: 7 } as const;
+
 /**
  * Longest window the advanced date search may span. Each extra day is another
  * set of SerpApi searches, so this is a cost guard as much as a UI limit.

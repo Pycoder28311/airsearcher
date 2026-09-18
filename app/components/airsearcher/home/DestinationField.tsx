@@ -6,7 +6,7 @@ import SearchInput from "@/framework/ui/searchInput/SearchInput";
 import Text from "@/framework/ui/iconText/Text";
 import { useAbsoluteModal } from "@/framework/ui/context/AppContext";
 import { colorMain, grayLight, radius } from "@/config/theme";
-import { cityById, searchPlaces, type PlaceSuggestion } from "@/data/places";
+import { cityById, isRuralPlace, searchPlaces, type PlaceSuggestion } from "@/data/places";
 import type { AirportCode } from "@/lib/airsearcher/types";
 import Panel from "../common/Panel";
 import CityAirportPanel from "./CityAirportPanel";
@@ -95,7 +95,13 @@ export default function DestinationField({
               className="min-w-0 flex-1 justify-start! gap-2 bg-transparent! px-2! py-2! text-left hover:bg-transparent!"
             >
             <Text
-              icon={suggestion.kind === "city" ? "home" : "arrow-right"}
+              icon={
+                suggestion.kind === "airport"
+                  ? "arrow-right"
+                  : isRuralPlace(cityById(suggestion.cityId))
+                    ? "star"
+                    : "home"
+              }
               size="small"
               className="shrink-0 text-gray-400"
             />

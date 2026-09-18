@@ -6,13 +6,16 @@ import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { colorMain, colorSecondary, grayMid, radius } from "@/config/theme";
 import { AIRPORT_ZOOM_THRESHOLD } from "@/lib/airsearcher/config/constants";
-import { airportByCode, cityById } from "@/data/places";
+import { airportByCode, airportsOfCity, cityById } from "@/data/places";
 import {
   EMPTY_SELECTION,
   selectAllInCity,
+  selectCity,
   toggleAirport,
   type PlaceSelection,
 } from "@/lib/airsearcher/mapSelection";
+import type { City } from "@/lib/airsearcher/types";
+import type { FlyTarget } from "./MapCanvas";
 import Dialog from "../common/Dialog";
 import DestinationField from "../home/DestinationField";
 
@@ -26,6 +29,19 @@ const MapCanvas = dynamic(() => import("./MapCanvas"), {
     </div>
   ),
 });
+
+/**
+ * Where the map should go for a destination: framing the destination and all
+ * of its airports, which for a rural place can lie a couple of hundred
+ * kilometres away.
+ */
+function flyTargetFor(city: City): FlyTarget {
+  const points = [
+    [city.lat, city.lon] as [number, number],
+    ...airportsOfCity(city.id).map((a) => [a.lat, a.lon] as [number, number]),
+  ];
+  return { lat: city.lat, lon: city.lon, zoom: AIRPORT_ZOOM_THRESHOLD + 1, bounds: points };
+}
 
 /**
  * Pick a destination city and its airports on a map.
@@ -54,18 +70,17 @@ export default function MapModal({
   const startCity = initialCityId ?? value.cityId;
   const startCityRecord = startCity ? cityById(startCity) : null;
 
-  const [selection, setSelection] = useState<PlaceSelection>(() =>
-    startCity ? { cityId: startCity, airports: [...value.airports] } : EMPTY_SELECTION,
-  );
-  const [flyTarget, setFlyTarget] = useState<{ lat: number; lon: number; zoom: number } | null>(
-    () =>
-      startCityRecord
-        ? {
-            lat: startCityRecord.lat,
-            lon: startCityRecord.lon,
-            zoom: AIRPORT_ZOOM_THRESHOLD + 1,
-          }
-        : null,
+  // The search's own destination keeps the airports already ticked for it;
+  // any other destination opens with all of its airports selected.
+  const [selection, setSelection] = useState<PlaceSelection>(() => {
+    if (!startCityRecord) return EMPTY_SELECTION;
+    if (startCityRecord.id === value.cityId && value.airports.length > 0) {
+      return { cityId: startCityRecord.id, airports: [...value.airports] };
+    }
+    return selectCity(startCityRecord);
+  });
+  const [flyTarget, setFlyTarget] = useState<FlyTarget | null>(() =>
+    startCityRecord ? flyTargetFor(startCityRecord) : null,
   );
 
   const city = selection.cityId ? cityById(selection.cityId) : null;
@@ -75,7 +90,7 @@ export default function MapModal({
       open={open}
       onClose={onClose}
       title="Choose destination on the map"
-      subtitle={`Cities are always shown; airports appear from zoom ${AIRPORT_ZOOM_THRESHOLD}. Airports can only be combined within one city.`}
+      subtitle={`Cities are always shown; airports and rural places (UNESCO sites, national parks) appear from zoom ${AIRPORT_ZOOM_THRESHOLD}. Airports can only be combined within one destination.`}
       width="max-w-5xl"
       footer={
         <>
@@ -115,7 +130,7 @@ export default function MapModal({
             ) : (
               <Text
                 size="very small"
-                value="Click a city, or zoom in and click individual airports."
+                value="Click a city or place, or zoom in and click individual airports."
                 className="text-gray-400"
               />
             )}
@@ -139,18 +154,12 @@ export default function MapModal({
       <div className="flex h-full flex-col gap-3">
         <DestinationField
           styleType="simple"
-          placeholder="Search a city or airport…"
+          placeholder="Search a city, place or airport…"
           value={selection}
           onChange={(next) => {
             setSelection({ cityId: next.cityId, airports: next.airports });
             const found = next.cityId ? cityById(next.cityId) : null;
-            if (found) {
-              setFlyTarget({
-                lat: found.lat,
-                lon: found.lon,
-                zoom: AIRPORT_ZOOM_THRESHOLD + 1,
-              });
-            }
+            if (found) setFlyTarget(flyTargetFor(found));
           }}
         />
 

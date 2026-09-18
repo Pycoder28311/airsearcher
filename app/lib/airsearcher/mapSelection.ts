@@ -1,15 +1,16 @@
 /**
  * The map's selection rule, in one testable place.
  *
- * The rule: airports may be multi-selected, but only within a single city.
- * Picking an airport that belongs to a different city clears the previous
- * city's selection entirely and starts fresh — so the selection can never
- * describe a journey to two different cities at once.
+ * The rule: airports may be multi-selected, but only within a single
+ * destination. Picking an airport the selected destination does not list
+ * clears its selection entirely and starts fresh — so the selection can never
+ * describe a journey to two different places at once.
  *
  * `MapCanvas` calls these and renders the result; it holds no selection logic
  * of its own.
  */
 
+import { cityById } from "@/data/places";
 import type { Airport, AirportCode, City } from "@/lib/airsearcher/types";
 
 export interface PlaceSelection {
@@ -25,17 +26,30 @@ export function selectCity(city: City): PlaceSelection {
 }
 
 /**
+ * Whether an airport is one of the selected destination's own airports. A
+ * rural place lists airports that belong to nearby cities, so its airports are
+ * read from the destination rather than from each airport's city.
+ */
+function servesSelection(current: PlaceSelection, airport: Airport): boolean {
+  if (!current.cityId) return false;
+  if (current.cityId === airport.cityId) return true;
+  return cityById(current.cityId)?.airportCodes.includes(airport.code) ?? false;
+}
+
+/**
  * Toggles one airport.
  *
- * Same city: adds or removes it, but never leaves the city selected with no
- * airports — deselecting the last one clears the selection outright.
- * Different city: discards the old city's airports and selects this one alone.
+ * One of the selected destination's airports: adds or removes it, but never
+ * leaves the destination selected with no airports — deselecting the last one
+ * clears the selection outright.
+ * Any other airport: discards the old destination's airports and selects this
+ * one alone, under its own city.
  */
 export function toggleAirport(
   current: PlaceSelection,
   airport: Airport,
 ): PlaceSelection {
-  if (current.cityId !== airport.cityId) {
+  if (!servesSelection(current, airport)) {
     return { cityId: airport.cityId, airports: [airport.code] };
   }
 
@@ -45,7 +59,7 @@ export function toggleAirport(
     : [...current.airports, airport.code];
 
   if (airports.length === 0) return EMPTY_SELECTION;
-  return { cityId: airport.cityId, airports };
+  return { cityId: current.cityId, airports };
 }
 
 /** Whether an airport is part of the current selection. */

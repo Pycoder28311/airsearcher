@@ -5,6 +5,11 @@ import Input from "@/framework/ui/input/Input";
 import Text from "@/framework/ui/iconText/Text";
 import { colorRed, grayMid, radius } from "@/config/theme";
 import { MAX_ADVANCED_RANGE_DAYS } from "@/lib/airsearcher/config/constants";
+import {
+  candidateDates,
+  describeTripLength,
+  flexibleTripLength,
+} from "@/lib/airsearcher/queryPlan";
 import { daysBetween, formatDate } from "@/lib/airsearcher/time";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 
@@ -28,6 +33,16 @@ export function dateError(query: SearchQuery): string | null {
   if (span < 0) return "The date range ends before it starts";
   if (span + 1 > MAX_ADVANCED_RANGE_DAYS) {
     return `Keep the range within ${MAX_ADVANCED_RANGE_DAYS} days`;
+  }
+  const flexible = flexibleTripLength(query);
+  if (flexible) {
+    if (flexible.min < 1 || flexible.max < flexible.min) {
+      return "Set the shortest and longest trip in nights";
+    }
+    if (candidateDates(query).length === 0) {
+      return "The window is too short for the shortest trip";
+    }
+    return null;
   }
   if (!query.tripDurationDays || query.tripDurationDays < 1) {
     return "Set how many nights the trip lasts";
@@ -58,7 +73,7 @@ export default function DateField({
         query.dateRange
           ? `${formatDate(query.dateRange.start)} – ${formatDate(query.dateRange.end)}`
           : "No range chosen",
-        query.tripDurationDays ? `${query.tripDurationDays} nights` : null,
+        describeTripLength(query),
         query.excludedDates.length > 0 ? `${query.excludedDates.length} excluded` : null,
         Object.keys(query.priorityDates).length > 0
           ? `${Object.keys(query.priorityDates).length} prioritised`

@@ -21,6 +21,11 @@ export interface Airport {
   country: string;
 }
 
+/**
+ * A destination. Usually a city with its own airports, but also a rural place
+ * — a UNESCO site or national park — whose airports are the ones within
+ * driving range, and may belong to other cities.
+ */
 export interface City {
   id: string;
   name: string;
@@ -28,6 +33,10 @@ export interface City {
   lat: number;
   lon: number;
   airportCodes: AirportCode[];
+  /** What kind of destination this is. Absent means a city. */
+  kind?: "city" | "unesco" | "park";
+  /** Rural places: minutes by road to each of their airports, where known. */
+  driveMinutes?: Record<AirportCode, number>;
 }
 
 /* ── Flights (mirrors the normalized SerpApi shape) ──────────────────────── */
@@ -230,6 +239,12 @@ export interface SearchQuery {
   dateRange: { start: string; end: string } | null;
   /** Advanced mode: fixed trip length in nights. */
   tripDurationDays: number | null;
+  /**
+   * Advanced mode, round trip: leave the trip length open between these nights
+   * instead of using `tripDurationDays`. The whole trip, return included, must
+   * then fit inside `dateRange`. Absent or null means a fixed length.
+   */
+  tripLengthRange?: { min: number; max: number } | null;
   /** ISO dates that must never be used. */
   excludedDates: string[];
   /** ISO date -> 1..3. Higher breaks ties in favour of that date. */

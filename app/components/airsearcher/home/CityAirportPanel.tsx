@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
-import { airportsOfCity, cityById } from "@/data/places";
+import { airportsOfCity, cityById, driveLabel } from "@/data/places";
 import type { AirportCode } from "@/lib/airsearcher/types";
 import MultiSelectList from "../common/MultiSelectList";
 import Panel from "../common/Panel";
@@ -58,7 +58,7 @@ export default function CityAirportPanel({
           options={airports.map((airport) => ({
             value: airport.code,
             label: airport.code,
-            sublabel: airport.name,
+            sublabel: [airport.name, driveLabel(city, airport.code)].filter(Boolean).join(" · "),
           }))}
           selected={selected}
           onChange={setSelected}

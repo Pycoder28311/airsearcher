@@ -32,7 +32,9 @@ export function searchKeyOf(query: SearchQuery): string {
           "advanced",
           query.dateRange?.start ?? "",
           query.dateRange?.end ?? "",
-          query.tripDurationDays ?? "",
+          query.tripLengthRange
+            ? `${query.tripLengthRange.min}-${query.tripLengthRange.max}`
+            : (query.tripDurationDays ?? ""),
           sorted(query.excludedDates).join("|"),
         ].join(":");
 

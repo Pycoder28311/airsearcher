@@ -3,6 +3,7 @@
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { colorSecondary, grayLight, radius } from "@/config/theme";
+import { describeTripLength } from "@/lib/airsearcher/queryPlan";
 import { formatAge, formatDate } from "@/lib/airsearcher/time";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import { cityById } from "@/data/places";
@@ -33,9 +34,12 @@ export default function ResultsHeader({
       ? `${formatDate(query.departureDate)}${
           query.returnDate ? ` – ${formatDate(query.returnDate)}` : ""
         }`
-      : `${formatDate(query.dateRange?.start ?? null)} – ${formatDate(
-          query.dateRange?.end ?? null,
-        )} · ${query.tripDurationDays} nights`;
+      : [
+          `${formatDate(query.dateRange?.start ?? null)} – ${formatDate(query.dateRange?.end ?? null)}`,
+          describeTripLength(query),
+        ]
+          .filter(Boolean)
+          .join(" · ");
 
   const origins = query.origins
     .filter((o) => o.passengers > 0)

@@ -18,7 +18,7 @@ import {
 import {
   candidateDates,
   planSearches,
-  returnDateFor,
+  returnDatesFor,
   searchId,
   type PlannedSearch,
 } from "@/lib/airsearcher/queryPlan";
@@ -96,7 +96,7 @@ export function weightsOf(filters: FilterState) {
 
 /**
  * Builds every arrangement the query allows — one set per destination airport
- * per candidate departure date — then scores them all together so they can be
+ * per candidate departure date and return date — then scores them all together so they can be
  * compared directly, whichever date or airport they belong to.
  */
 export function buildAllArrangements(
@@ -109,18 +109,21 @@ export function buildAllArrangements(
 
   for (const airport of query.destination.airports) {
     for (const departureDate of candidateDates(query)) {
-      arrangements.push(
-        ...buildArrangements({
-          origins: query.origins,
-          gatheringAirport: query.gatheringAirport,
-          destination: { cityId: query.destination.cityId, airport },
-          pool,
-          departureDate,
-          returnDate: returnDateFor(query, departureDate),
-          allow,
-          sameAirline: query.sameAirline,
-        }),
-      );
+      // An open trip length tries every return date; ranking picks the best.
+      for (const returnDate of returnDatesFor(query, departureDate)) {
+        arrangements.push(
+          ...buildArrangements({
+            origins: query.origins,
+            gatheringAirport: query.gatheringAirport,
+            destination: { cityId: query.destination.cityId, airport },
+            pool,
+            departureDate,
+            returnDate,
+            allow,
+            sameAirline: query.sameAirline,
+          }),
+        );
+      }
     }
   }
 

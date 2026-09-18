@@ -49,7 +49,44 @@ export function searchId(search: PlannedSearch): string {
   return `${search.from}-${search.to}-${search.date}-${search.direction}`;
 }
 
-/** Every departure date the query is asking about. */
+/**
+ * The open trip length of an advanced round trip, or null when the length is
+ * fixed (or the question does not apply).
+ */
+export function flexibleTripLength(query: SearchQuery): { min: number; max: number } | null {
+  if (query.dateMode !== "advanced" || query.tripType !== "round-trip") return null;
+  return query.tripLengthRange ?? null;
+}
+
+/** "7 nights", "3–7 nights", or null when there is no length to show. */
+export function describeTripLength(query: SearchQuery): string | null {
+  const flexible = flexibleTripLength(query);
+  if (flexible) return `${flexible.min}–${flexible.max} nights`;
+  return query.tripDurationDays ? `${query.tripDurationDays} nights` : null;
+}
+
+/**
+ * Every date a trip of open length may come back on: within the length range,
+ * inside the date window, and never on an excluded date.
+ */
+function flexibleReturnDates(query: SearchQuery, departureDate: string): string[] {
+  const flexible = flexibleTripLength(query);
+  if (!flexible || !query.dateRange) return [];
+  const excluded = new Set(query.excludedDates);
+  const dates: string[] = [];
+  for (let nights = flexible.min; nights <= flexible.max; nights++) {
+    const date = addDays(departureDate, nights);
+    if (date > query.dateRange.end) break;
+    if (!excluded.has(date)) dates.push(date);
+  }
+  return dates;
+}
+
+/**
+ * Every departure date the query is asking about. With an open trip length the
+ * whole trip must fit in the window, so a date too late to come back from in
+ * time is not a candidate.
+ */
 export function candidateDates(query: SearchQuery): string[] {
   if (query.dateMode === "exact") {
     return query.departureDate ? [query.departureDate] : [];
@@ -57,8 +94,10 @@ export function candidateDates(query: SearchQuery): string[] {
 
   if (!query.dateRange) return [];
   const excluded = new Set(query.excludedDates);
+  const flexible = flexibleTripLength(query) !== null;
   return eachDayInRange(query.dateRange.start, query.dateRange.end).filter(
-    (date) => !excluded.has(date),
+    (date) =>
+      !excluded.has(date) && (!flexible || flexibleReturnDates(query, date).length > 0),
   );
 }
 
@@ -68,6 +107,19 @@ export function returnDateFor(query: SearchQuery, departureDate: string): string
   if (query.dateMode === "exact") return query.returnDate;
   if (query.tripDurationDays === null) return null;
   return addDays(departureDate, query.tripDurationDays);
+}
+
+/**
+ * Every return date worth pairing with a departure date: one for a fixed
+ * length, several for an open one, and `[null]` for a one-way trip.
+ *
+ * An open length never costs extra requests: every return date lies inside the
+ * window, and route data is deduplicated per date, so each day is searched at
+ * most once in each direction however many trip lengths share it.
+ */
+export function returnDatesFor(query: SearchQuery, departureDate: string): (string | null)[] {
+  if (flexibleTripLength(query)) return flexibleReturnDates(query, departureDate);
+  return [returnDateFor(query, departureDate)];
 }
 
 /**
@@ -99,8 +151,6 @@ export function planSearches(
 
   for (const destination of query.destination.airports) {
     for (const departureDate of candidateDates(query)) {
-      const returning = returnDateFor(query, departureDate);
-
       // The main leg out of the hub: needed whenever anyone gathers there, and
       // whenever the hub is itself one of the origins.
       if (someoneGathers || hubInGroup) {
@@ -111,15 +161,6 @@ export function planSearches(
           direction: "outbound",
           reason: "main",
         });
-        if (returning) {
-          push({
-            from: destination,
-            to: hub,
-            date: returning,
-            direction: "return",
-            reason: "main",
-          });
-        }
       }
 
       for (const origin of travelling) {
@@ -131,15 +172,6 @@ export function planSearches(
             direction: "outbound",
             reason: "feeder",
           });
-          if (returning) {
-            push({
-              from: hub,
-              to: origin.airport,
-              date: returning,
-              direction: "return",
-              reason: "feeder",
-            });
-          }
         }
 
         if (allow.direct) {
@@ -150,7 +182,34 @@ export function planSearches(
             direction: "outbound",
             reason: "direct",
           });
-          if (returning) {
+        }
+      }
+
+      for (const returning of returnDatesFor(query, departureDate)) {
+        if (!returning) continue;
+
+        if (someoneGathers || hubInGroup) {
+          push({
+            from: destination,
+            to: hub,
+            date: returning,
+            direction: "return",
+            reason: "main",
+          });
+        }
+
+        for (const origin of travelling) {
+          if (allow.gather) {
+            push({
+              from: hub,
+              to: origin.airport,
+              date: returning,
+              direction: "return",
+              reason: "feeder",
+            });
+          }
+
+          if (allow.direct) {
             push({
               from: destination,
               to: origin.airport,

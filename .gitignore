@@ -39,6 +39,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# destination builder downloads
+/scripts/airsearcher/.cache/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
