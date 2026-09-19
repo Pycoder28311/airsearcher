@@ -37,7 +37,8 @@ import { googleFlightsUrl } from "@/lib/airsearcher/links";
 import { applyScopedFilters } from "@/lib/airsearcher/filtering";
 import { DEFAULT_FILTERS } from "@/lib/airsearcher/config/filters";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
-import { usesSerpApi } from "@/lib/airsearcher/search";
+import { buildSearchResult, usesSerpApi } from "@/lib/airsearcher/search";
+import { buildPriceGrid, pairKey } from "@/lib/airsearcher/priceGrid";
 import { normalizeTravelpayoutsResponse } from "@/lib/airsearcher/travelpayouts";
 import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/storage";
 import { toggleAirport, selectCity } from "@/lib/airsearcher/mapSelection";
@@ -46,7 +47,12 @@ import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
 import { MIN_GATHER_BUFFER_MINUTES } from "@/lib/airsearcher/config/constants";
 import { EUROPE_CITIES_BY_ID } from "@/data/europeCities";
 import { airportByCode } from "@/data/places";
-import { stopAirportsOf, type NormalizedFlight, type SearchQuery } from "@/lib/airsearcher/types";
+import {
+  stopAirportsOf,
+  type Arrangement,
+  type NormalizedFlight,
+  type SearchQuery,
+} from "@/lib/airsearcher/types";
 
 let passed = 0;
 function check(name: string, fn: () => void): void {
@@ -232,6 +238,95 @@ check("an open trip length skips excluded return dates and changes the key", () 
   const excluded = { ...FLEXIBLE, excludedDates: ["2026-09-05"] };
   assert.ok(!returnDatesFor(excluded, "2026-09-01").includes("2026-09-05"));
   assert.notEqual(searchKeyOf(FLEXIBLE), searchKeyOf({ ...FLEXIBLE, tripLengthRange: null }));
+});
+
+/* ── Price grid — built from arrangements the search already holds ────────── */
+
+const GRID_QUERY: SearchQuery = {
+  ...FLEXIBLE,
+  dateRange: { start: "2026-09-01", end: "2026-09-10" },
+  tripLengthRange: { min: 2, max: 4 },
+};
+
+/** Just enough of an arrangement for the grid: its dates and its price. */
+function priced(departureDate: string, returnDate: string, totalPrice: number): Arrangement {
+  return { departureDate, returnDate, totals: { totalPrice } } as unknown as Arrangement;
+}
+
+check("the price grid has a row per candidate date and only 2-4 night cells", () => {
+  const grid = buildPriceGrid(GRID_QUERY, []);
+  assert.deepEqual(grid.departureDates, candidateDates(GRID_QUERY));
+  const union = new Set(grid.departureDates.flatMap((d) => returnDatesFor(GRID_QUERY, d)));
+  assert.deepEqual(grid.returnDates, [...union].sort());
+  for (const cell of grid.cells.values()) assert.ok(cell.nights >= 2 && cell.nights <= 4);
+  // A 1-night and a 5-night pair are not trips at all.
+  assert.ok(!grid.cells.has(pairKey("2026-09-01", "2026-09-02")));
+  assert.ok(!grid.cells.has(pairKey("2026-09-01", "2026-09-06")));
+});
+
+check("a grid cell holds the cheapest price, and an empty pair stays a cell", () => {
+  const grid = buildPriceGrid(GRID_QUERY, [
+    priced("2026-09-01", "2026-09-04", 900),
+    priced("2026-09-01", "2026-09-04", 700),
+    priced("2026-09-01", "2026-09-04", 800),
+    priced("2026-09-02", "2026-09-05", 1200),
+    priced("2026-09-03", "2026-09-05", 1000),
+  ]);
+  const cell = grid.cells.get(pairKey("2026-09-01", "2026-09-04"));
+  assert.equal(cell?.cheapest, 700);
+  assert.equal(cell?.count, 3);
+  const empty = grid.cells.get(pairKey("2026-09-01", "2026-09-03"));
+  assert.ok(empty, "a valid pair with no result is still present");
+  assert.equal(empty.cheapest, null);
+  assert.equal(grid.best?.cheapest, 700);
+  assert.ok(grid.thresholds && grid.thresholds.low <= grid.thresholds.high);
+});
+
+check("a fixed-length or exact search has no price grid", () => {
+  assert.equal(buildPriceGrid({ ...GRID_QUERY, tripLengthRange: null }, []).departureDates.length, 0);
+  assert.equal(buildPriceGrid(QUERY, []).departureDates.length, 0);
+});
+
+check("every date pair keeps a price, within the arrangement cap", () => {
+  const wide: SearchQuery = {
+    ...FLEXIBLE,
+    dateRange: { start: "2026-10-01", end: "2026-11-14" },
+    tripLengthRange: { min: 3, max: 14 },
+  };
+  const pairs = candidateDates(wide).flatMap((d) => returnDatesFor(wide, d));
+  assert.ok(pairs.length > 300, `expected more than 300 pairs, got ${pairs.length}`);
+
+  const { arrangements, priceGrid } = buildSearchResult(
+    wide,
+    DEFAULT_RANKING_CONFIG,
+    mockPool(planSearches(wide)),
+  );
+  assert.ok(arrangements.length <= 300, "the stored arrangements stay within the cap");
+  assert.equal(Object.keys(priceGrid.cells).length, pairs.length, "the floor covers every pair");
+
+  const grid = buildPriceGrid(wide, arrangements, { floor: priceGrid, stored: arrangements });
+  const cells = [...grid.cells.values()];
+  assert.ok(cells.every((cell) => cell.cheapest !== null), "no hole left by the cap");
+  // The cheapest pairs are kept first, so the grid's best is a real, listable one.
+  assert.equal(grid.best?.unfiltered, false);
+  assert.equal(grid.best?.cheapest, Math.min(...Object.values(priceGrid.cells)));
+  for (const cell of cells) {
+    assert.equal(cell.cheapest, priceGrid.cells[pairKey(cell.departureDate, cell.returnDate)]);
+  }
+  // Every departure date still keeps its cheapest arrangement for the chart.
+  const days = new Set(arrangements.map((a) => a.departureDate));
+  assert.equal(days.size, candidateDates(wide).length);
+});
+
+check("a pair the filters emptied shows no result, not the stored floor", () => {
+  const stored = [priced("2026-09-01", "2026-09-04", 700)];
+  const floor = { cells: { [pairKey("2026-09-01", "2026-09-04")]: 700, [pairKey("2026-09-02", "2026-09-05")]: 650 } };
+  const grid = buildPriceGrid(GRID_QUERY, [], { floor, stored });
+  assert.equal(grid.cells.get(pairKey("2026-09-01", "2026-09-04"))?.cheapest, null);
+  const capped = grid.cells.get(pairKey("2026-09-02", "2026-09-05"));
+  assert.equal(capped?.cheapest, 650);
+  assert.equal(capped?.unfiltered, true);
+  assert.equal(grid.best, null, "a floor price is never the highlighted best");
 });
 
 check("one-way searches only spend the outbound batch", () => {

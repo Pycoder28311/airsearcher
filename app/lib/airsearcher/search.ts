@@ -27,6 +27,7 @@ import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { findFreshByKey, saveSearch, type StoredSearch } from "@/lib/airsearcher/storage";
 import { poolFromRecords } from "@/lib/airsearcher/serpApi";
 import { poolKey } from "@/lib/airsearcher/grouping";
+import { cheapestPerPair, type StoredPriceGrid } from "@/lib/airsearcher/priceGrid";
 import { cityById } from "@/data/places";
 import type {
   Arrangement,
@@ -97,13 +98,13 @@ export function weightsOf(filters: FilterState) {
 /**
  * Builds every arrangement the query allows — one set per destination airport
  * per candidate departure date and return date — then scores them all together so they can be
- * compared directly, whichever date or airport they belong to.
+ * compared directly, whichever date or airport they belong to. Not capped.
  */
-export function buildAllArrangements(
+function rankEveryArrangement(
   query: SearchQuery,
   preferences: RankingPreferences,
   pool: FlightPool,
-  allow: RoutingAllowance = { direct: true, gather: true },
+  allow: RoutingAllowance,
 ): Arrangement[] {
   const arrangements: Arrangement[] = [];
 
@@ -127,27 +128,69 @@ export function buildAllArrangements(
     }
   }
 
-  // Every arrangement is stored in the browser with its flights, so only the
-  // best-scoring ones are kept; the results page re-scores whatever survives.
-  // The cheapest of each date is always kept, so no day drops out of the
-  // cost-per-day chart because of the cap.
-  const ranked = sortArrangements(
+  return sortArrangements(
     scoreArrangements(arrangements, preferences.weights, preferences, query.priorityDates),
     "score",
   );
-  const cheapestPerDate = new Map<string, Arrangement>();
+}
+
+/** The cheapest arrangement for each value of `keyOf`, cheapest first. */
+function cheapestBy(ranked: Arrangement[], keyOf: (a: Arrangement) => string): Arrangement[] {
+  const cheapest = new Map<string, Arrangement>();
   for (const arrangement of ranked) {
-    const current = cheapestPerDate.get(arrangement.departureDate);
+    const current = cheapest.get(keyOf(arrangement));
     if (!current || arrangement.totals.totalPrice < current.totals.totalPrice) {
-      cheapestPerDate.set(arrangement.departureDate, arrangement);
+      cheapest.set(keyOf(arrangement), arrangement);
     }
   }
-  const kept = new Set(cheapestPerDate.values());
-  for (const arrangement of ranked) {
-    if (kept.size >= MAX_ARRANGEMENTS_PER_SEARCH) break;
-    kept.add(arrangement);
+  return [...cheapest.values()].sort((a, b) => a.totals.totalPrice - b.totals.totalPrice);
+}
+
+/**
+ * Every arrangement is stored in the browser with its flights, so only
+ * MAX_ARRANGEMENTS_PER_SEARCH survive; the results page re-scores them.
+ *
+ * Kept in this order until the cap: the cheapest of each departure date (no
+ * bar of the cost-per-day chart drops out), the cheapest of each
+ * departure/return pair, cheapest pairs first, then the best-scoring rest.
+ * With a fixed trip length the first two are the same set. An open length can
+ * have more pairs than the cap; those the cap drops are covered by the stored
+ * price floor (`cheapestPerPair`) instead.
+ */
+function keepWithinCap(ranked: Arrangement[]): Arrangement[] {
+  const kept = new Set<Arrangement>(cheapestBy(ranked, (a) => a.departureDate));
+  const tiers = [cheapestBy(ranked, (a) => `${a.departureDate}|${a.returnDate ?? ""}`), ranked];
+  for (const tier of tiers) {
+    for (const arrangement of tier) {
+      if (kept.size >= MAX_ARRANGEMENTS_PER_SEARCH) break;
+      kept.add(arrangement);
+    }
   }
   return ranked.filter((arrangement) => kept.has(arrangement));
+}
+
+/** The arrangements a search stores, within the cap. */
+export function buildAllArrangements(
+  query: SearchQuery,
+  preferences: RankingPreferences,
+  pool: FlightPool,
+  allow: RoutingAllowance = { direct: true, gather: true },
+): Arrangement[] {
+  return keepWithinCap(rankEveryArrangement(query, preferences, pool, allow));
+}
+
+/**
+ * The arrangements a search stores, plus the cheapest total of every date
+ * pair taken before the cap, so the price grid never shows a hole the cap made.
+ */
+export function buildSearchResult(
+  query: SearchQuery,
+  preferences: RankingPreferences,
+  pool: FlightPool,
+  allow: RoutingAllowance = { direct: true, gather: true },
+): { arrangements: Arrangement[]; priceGrid: StoredPriceGrid } {
+  const ranked = rankEveryArrangement(query, preferences, pool, allow);
+  return { arrangements: keepWithinCap(ranked), priceGrid: cheapestPerPair(ranked) };
 }
 
 /**
@@ -262,6 +305,12 @@ export async function runSearch(
     const alternative = await requestTravelpayoutsRecords(query, allow);
     if ("error" in alternative) throw new SearchRequestError(alternative.error, 0);
 
+    const built = buildSearchResult(
+      query,
+      withWeights,
+      poolFromRecords(alternative.records),
+      allow,
+    );
     const entry: StoredSearch = {
       id: `search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       savedAt: new Date().toISOString(),
@@ -271,10 +320,8 @@ export async function runSearch(
       arrangements: [],
       travelpayouts: {
         records: alternative.records,
-        arrangements: sortArrangements(
-          buildAllArrangements(query, withWeights, poolFromRecords(alternative.records), allow),
-          "score",
-        ),
+        arrangements: sortArrangements(built.arrangements, "score"),
+        priceGrid: built.priceGrid,
       },
     };
     saveSearch(entry);
@@ -297,22 +344,26 @@ export async function runSearch(
   // it is needed.
   const pool = poolFromRecords(live.records);
 
-  const arrangements = sortArrangements(
-    buildAllArrangements(query, withWeights, pool, allow),
-    "score",
-  );
+  const built = buildSearchResult(query, withWeights, pool, allow);
+  const arrangements = sortArrangements(built.arrangements, "score");
 
   // Travelpayouts records go through exactly the same pool and grouping.
   const alternative = await travelpayouts;
   const travelpayoutsResult =
     "records" in alternative
-      ? {
-          records: alternative.records,
-          arrangements: sortArrangements(
-            buildAllArrangements(query, withWeights, poolFromRecords(alternative.records), allow),
-            "score",
-          ),
-        }
+      ? (() => {
+          const fromTravelpayouts = buildSearchResult(
+            query,
+            withWeights,
+            poolFromRecords(alternative.records),
+            allow,
+          );
+          return {
+            records: alternative.records,
+            arrangements: sortArrangements(fromTravelpayouts.arrangements, "score"),
+            priceGrid: fromTravelpayouts.priceGrid,
+          };
+        })()
       : { arrangements: [], error: alternative.error };
 
   const entry: StoredSearch = {
@@ -322,6 +373,7 @@ export async function runSearch(
     key,
     query,
     arrangements,
+    priceGrid: built.priceGrid,
     records: live.records,
     travelpayouts: travelpayoutsResult,
   };

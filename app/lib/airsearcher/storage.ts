@@ -29,6 +29,7 @@ import type {
   Routing,
   SearchQuery,
 } from "@/lib/airsearcher/types";
+import type { StoredPriceGrid } from "@/lib/airsearcher/priceGrid";
 
 const SEARCHES_KEY = "airsearcher:searches:v1";
 const FILTERS_KEY = "airsearcher:filters:v1";
@@ -44,6 +45,11 @@ export interface StoredSearch {
   query: SearchQuery;
   arrangements: Arrangement[];
   /**
+   * Cheapest total per departure/return pair, taken before the arrangement
+   * cap. A few KB; absent on entries saved before the price grid existed.
+   */
+  priceGrid?: StoredPriceGrid;
+  /**
    * Every flight the search gathered, one record per route.
    *
    * Best-effort: if the browser refuses the write because it is too large, the
@@ -58,6 +64,7 @@ export interface StoredSearch {
    */
   travelpayouts?: {
     arrangements: Arrangement[];
+    priceGrid?: StoredPriceGrid;
     records?: FlightRecord[];
     error?: string;
   };

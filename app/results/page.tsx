@@ -5,10 +5,11 @@ import { useSearchParams } from "next/navigation";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { useAlert } from "@/framework/ui/useAlert";
-import { grayMid } from "@/config/theme";
+import { colorSecondary, grayMid } from "@/config/theme";
 import FilterSidebar from "@/components/airsearcher/filters/FilterSidebar";
 import SidebarToggle from "@/components/airsearcher/common/SidebarToggle";
-import CostPerDayChart from "@/components/airsearcher/results/CostPerDayChart";
+import DateRangeView from "@/components/airsearcher/results/DateRangeView";
+import { describePair } from "@/components/airsearcher/results/PriceGrid";
 import ExpandAllToggle from "@/components/airsearcher/results/ExpandAllToggle";
 import FloatingLayer from "@/components/airsearcher/results/FloatingLayer";
 import ResultCard from "@/components/airsearcher/results/ResultCard";
@@ -23,7 +24,7 @@ import {
   uniqueArrangements,
 } from "@/lib/airsearcher/grouping";
 import { applyScopedFilters, explainEmpty } from "@/lib/airsearcher/filtering";
-import { candidateDates } from "@/lib/airsearcher/queryPlan";
+import type { DatePair } from "@/lib/airsearcher/priceGrid";
 import { usesSerpApi, weightsOf } from "@/lib/airsearcher/search";
 import {
   findSearchById,
@@ -35,6 +36,7 @@ import {
   type StoredPreferences,
   type StoredSearch,
 } from "@/lib/airsearcher/storage";
+import { daysBetween } from "@/lib/airsearcher/time";
 
 /** Which API's results the page is showing. */
 type ResultSource = "serpapi" | "travelpayouts";
@@ -59,6 +61,9 @@ function ResultsView() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [now, setNow] = useState<number | null>(null);
   const [source, setSource] = useState<ResultSource>("serpapi");
+  // Page state only, never FilterState: a date-pair pick is a view of this one
+  // result set and must not leak into the next search.
+  const [selectedPair, setSelectedPair] = useState<DatePair | null>(null);
 
   /* eslint-disable react-hooks/set-state-in-effect --
      Reading browser storage is exactly the "subscribe to an external system"
@@ -73,6 +78,7 @@ function ResultsView() {
     setPreferences(prefs);
     setSidebarOpen(!prefs.sidebarCollapsed);
     setNow(Date.now());
+    setSelectedPair(null);
 
     if (found && isStale(found)) {
       showAlert(
@@ -118,6 +124,21 @@ function ResultsView() {
     return sortArrangements(scored, sortMode);
   }, [entry, arrangements, filters, preferences, sortMode]);
 
+  // The grid is built from `visible`, so it keeps every cell; the pair only
+  // narrows the cards.
+  const selectedOnly = useMemo(
+    () =>
+      selectedPair
+        ? visible.filter(
+            (a) =>
+              a.departureDate === selectedPair.departureDate &&
+              a.returnDate === selectedPair.returnDate,
+          )
+        : visible,
+    [visible, selectedPair],
+  );
+
+  // Stays on `visible`: re-basing on one cell would make its cards all look cheap.
   const cheapestPrice =
     visible.length > 0 ? Math.min(...visible.map((a) => a.totals.totalPrice)) : null;
 
@@ -158,9 +179,12 @@ function ResultsView() {
     );
   }
 
-  const listed = visible.filter((a) => !floating.isFloating(a.id));
+  const listed = selectedOnly.filter((a) => !floating.isFloating(a.id));
   const allOpen = listed.length > 0 && listed.every((a) => openIds.has(a.id));
   const reasons = visible.length === 0 ? explainEmpty(arrangements, filters) : [];
+  const pairLabel = selectedPair
+    ? describePair(selectedPair, daysBetween(selectedPair.departureDate, selectedPair.returnDate))
+    : "";
 
   return (
     <div className="flex w-full gap-6">
@@ -193,6 +217,7 @@ function ResultsView() {
                 onClick={() => {
                   // Arrangement ids repeat across APIs, so open cards do not carry over.
                   setOpenIds(new Set());
+                  setSelectedPair(null);
                   setSource(tab.id);
                 }}
               >
@@ -218,13 +243,32 @@ function ResultsView() {
         )}
 
         {rangeSearch && (
-          <CostPerDayChart dates={candidateDates(entry.query)} arrangements={visible} />
+          <DateRangeView
+            query={entry.query}
+            arrangements={visible}
+            stored={arrangements}
+            floor={
+              activeSource === "serpapi" ? entry.priceGrid : entry.travelpayouts?.priceGrid
+            }
+            selectedPair={selectedPair}
+            onSelectPair={setSelectedPair}
+          />
         )}
 
         <div
           className={`flex flex-wrap items-center gap-2 border-y ${grayMid.border} py-2`}
         >
           <SidebarToggle open={sidebarOpen} onToggle={toggleSidebar} filters={filters} />
+          {selectedPair && (
+            <Button
+              styleType="tertiary"
+              onClick={() => setSelectedPair(null)}
+              className={`gap-1.5 border ${colorSecondary.border}`}
+            >
+              <Text size="very small" value={pairLabel} className={colorSecondary.text} />
+              <Text icon="close" size="very small" className={colorSecondary.text} />
+            </Button>
+          )}
           <ExpandAllToggle
             allOpen={allOpen}
             disabled={listed.length === 0}
@@ -262,9 +306,20 @@ function ResultsView() {
               Reset all filters
             </Button>
           </div>
+        ) : selectedOnly.length === 0 ? (
+          <div className="flex flex-col items-start gap-3">
+            <Text
+              size="small"
+              value={`No result for ${pairLabel.split(" · ")[0]} with the current filters.`}
+              className="text-gray-700"
+            />
+            <Button styleType="tertiary" onClick={() => setSelectedPair(null)}>
+              Show all dates
+            </Button>
+          </div>
         ) : (
           <div className="flex flex-col gap-4">
-            {visible.map((arrangement) => (
+            {selectedOnly.map((arrangement) => (
               <ResultCard
                 key={arrangement.id}
                 arrangement={arrangement}
@@ -289,7 +344,7 @@ function ResultsView() {
 
       <FloatingLayer
         boxes={floating.boxes}
-        arrangements={visible}
+        arrangements={selectedOnly}
         cheapestPrice={cheapestPrice ?? 0}
         onMove={floating.move}
         onResize={floating.resize}
