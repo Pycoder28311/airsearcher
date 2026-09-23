@@ -21,6 +21,7 @@ import {
   DEFAULT_FILTERS,
   type FilterState,
 } from "@/lib/airsearcher/config/filters";
+import { destinationsOf } from "@/lib/airsearcher/types";
 import type {
   Arrangement,
   FlightRecord,
@@ -182,6 +183,11 @@ function upgradeLeg(leg: LegacyLeg): GroupLeg {
 function upgradeEntry(entry: StoredSearch): StoredSearch {
   return {
     ...entry,
+    // Searches saved before several destinations were allowed hold one.
+    query: {
+      ...entry.query,
+      destinations: destinationsOf(entry.query),
+    },
     arrangements: entry.arrangements.map((arrangement) => ({
       ...arrangement,
       legs: (arrangement.legs as unknown[]).map((leg) =>

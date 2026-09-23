@@ -15,7 +15,9 @@
  *      searches themselves; both arrangements come out of the same pool.
  */
 
+import { MAX_AIRPORTS_PER_REQUEST } from "@/lib/airsearcher/config/constants";
 import { addDays, eachDayInRange } from "@/lib/airsearcher/time";
+import { destinationAirports } from "@/lib/airsearcher/types";
 import type {
   AirportCode,
   RoutingAllowance,
@@ -149,7 +151,10 @@ export function planSearches(
   const someoneGathers = allow.gather && travelling.length > 0;
   const hubInGroup = active.some((o) => o.airport === hub);
 
-  for (const destination of query.destination.airports) {
+  // Several destinations share these searches: the airports simply join the
+  // same lists, so comparing three cities costs what one city costs, as long
+  // as they still fit in one request (see `planRequestBatches`).
+  for (const destination of destinationAirports(query)) {
     for (const departureDate of candidateDates(query)) {
       // The main leg out of the hub: needed whenever anyone gathers there, and
       // whenever the hub is itself one of the origins.
@@ -231,6 +236,11 @@ export function planSearches(
  * make. Google Flights accepts several departure airports in one
  * comma-separated `departure_id` and `arrival_id`. Each candidate date costs
  * one outbound request and, for round trips, one return request.
+ *
+ * At most MAX_AIRPORTS_PER_REQUEST airports fit on each side of a request, so
+ * enough destinations to overflow that split the date into several requests —
+ * the only way adding a destination ever costs more. The split is by whole
+ * airports, so every route the plan needs is still covered exactly once.
  */
 export function planRequestBatches(plan: PlannedSearch[]): PlannedRequestBatch[] {
   const groups = new Map<
@@ -258,12 +268,26 @@ export function planRequestBatches(plan: PlannedSearch[]): PlannedRequestBatch[]
 
   return [...groups.values()]
     .sort((a, b) => a.date.localeCompare(b.date) || a.direction.localeCompare(b.direction))
-    .map(({ direction, date, departures, arrivals }) => ({
-      direction,
-      departureId: [...departures].sort().join(","),
-      arrivalId: [...arrivals].sort().join(","),
-      date,
-    }));
+    .flatMap(({ direction, date, departures, arrivals }) =>
+      chunk([...departures].sort()).flatMap((departureIds) =>
+        chunk([...arrivals].sort()).map((arrivalIds) => ({
+          direction,
+          departureId: departureIds.join(","),
+          arrivalId: arrivalIds.join(","),
+          date,
+        })),
+      ),
+    );
+}
+
+/** Airports split into groups of at most MAX_AIRPORTS_PER_REQUEST. */
+function chunk(codes: AirportCode[]): AirportCode[][] {
+  if (codes.length <= MAX_AIRPORTS_PER_REQUEST) return [codes];
+  const chunks: AirportCode[][] = [];
+  for (let i = 0; i < codes.length; i += MAX_AIRPORTS_PER_REQUEST) {
+    chunks.push(codes.slice(i, i + MAX_AIRPORTS_PER_REQUEST));
+  }
+  return chunks;
 }
 
 /**

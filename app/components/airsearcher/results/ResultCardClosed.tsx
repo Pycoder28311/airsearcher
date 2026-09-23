@@ -3,6 +3,7 @@
 import Text from "@/framework/ui/iconText/Text";
 import { colorMain, grayMid, radius } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
+import { cityName } from "@/data/places";
 import { describeRouting } from "@/lib/airsearcher/grouping";
 import { formatClock, formatDate, formatDuration } from "@/lib/airsearcher/time";
 import { journeyFlights, type Arrangement, type GroupLeg } from "@/lib/airsearcher/types";
@@ -98,6 +99,13 @@ export default function ResultCardClosed({
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Named, not just coded: a search can compare several destinations. */}
+      <Text
+        size="very small"
+        value={`${cityName(arrangement.destination.cityId)} · ${arrangement.destination.airport}`}
+        className={`font-medium ${colorMain.text}`}
+      />
+
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
         <Text
           size="big"

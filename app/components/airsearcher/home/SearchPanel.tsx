@@ -7,10 +7,11 @@ import { useApp } from "@/framework/ui/context/AppContext";
 import { border, colorSecondary, grayMid, radiusBig, shadow } from "@/config/theme";
 import { describeCost, explainCost, needsConfirmation } from "@/lib/airsearcher/quota";
 import { previewCost, usesSerpApi } from "@/lib/airsearcher/search";
+import { destinationsOf } from "@/lib/airsearcher/types";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 import DateField, { dateError } from "./DateField";
 import DepartureDropdown from "./DepartureDropdown";
-import DestinationField from "./DestinationField";
+import DestinationsField from "./DestinationsField";
 import TripTypeToggle from "./TripTypeToggle";
 
 /**
@@ -39,9 +40,12 @@ export default function SearchPanel({
   const { openModal, closeModal } = useApp();
 
   const { plan, cost, cached } = previewCost(query);
+  const destinations = destinationsOf(query);
   const invalid =
     dateError(query) ??
-    (query.destination.airports.length === 0 ? "Choose a destination" : null) ??
+    (destinations.length === 0 || destinations.some((place) => place.airports.length === 0)
+      ? "Choose a destination"
+      : null) ??
     (query.origins.every((o) => o.passengers === 0)
       ? "Add at least one passenger"
       : null);
@@ -111,16 +115,9 @@ export default function SearchPanel({
         </div>
 
         <div className="md:col-span-8">
-          <DestinationField
-            value={query.destination}
-            onChange={(destination) =>
-              onChange({
-                destination: {
-                  cityId: destination.cityId ?? query.destination.cityId,
-                  airports: destination.airports,
-                },
-              })
-            }
+          <DestinationsField
+            destinations={destinations}
+            onChange={(next) => onChange({ destinations: next })}
             onOpenMap={onOpenMap}
           />
         </div>

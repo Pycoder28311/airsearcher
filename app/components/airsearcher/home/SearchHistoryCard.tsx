@@ -12,7 +12,8 @@ import {
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { formatAge, formatDate } from "@/lib/airsearcher/time";
 import { isStale, type StoredSearch } from "@/lib/airsearcher/storage";
-import { cityById } from "@/data/places";
+import { cityName } from "@/data/places";
+import { destinationsOf } from "@/lib/airsearcher/types";
 import { useState } from "react";
 import FlightDataDialog from "./FlightDataDialog";
 
@@ -36,7 +37,9 @@ export default function SearchHistoryCard({
   const [dataOpen, setDataOpen] = useState(false);
 
   const stale = isStale(entry, now);
-  const city = cityById(entry.query.destination.cityId);
+  const destinations = destinationsOf(entry.query)
+    .map((place) => cityName(place.cityId))
+    .join(" + ");
 
   const gathered = (entry.records ?? []).reduce(
     (sum, record) => sum + record.flights.length,
@@ -68,7 +71,7 @@ export default function SearchHistoryCard({
     >
       <Text
         size="big"
-        value={city?.name ?? entry.query.destination.cityId}
+        value={destinations}
         className="font-semibold text-gray-900"
       />
       <Text size="medium" value={dates} className="text-gray-800" />

@@ -37,6 +37,14 @@ export const DEFAULT_TRIP_LENGTH_RANGE = { min: 3, max: 7 } as const;
 export const MAX_ADVANCED_RANGE_DAYS = 45;
 
 /**
+ * Most airports Google Flights accepts in one comma-separated `departure_id`
+ * or `arrival_id`. Beyond this a request is split, and each extra split costs
+ * one more SerpApi request — which is why the cost line and the confirmation
+ * dialog are computed from the batches, never from the dates alone.
+ */
+export const MAX_AIRPORTS_PER_REQUEST = 7;
+
+/**
  * Leaflet zoom below which airport markers are hidden, so a zoomed-out map
  * shows cities only and does not turn into a wall of dots.
  */

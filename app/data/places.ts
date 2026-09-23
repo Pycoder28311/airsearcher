@@ -65,6 +65,11 @@ export function driveLabel(city: City | null, code: AirportCode): string | null 
   return `${hours > 0 ? `${hours} h ` : ""}${rest} min drive`;
 }
 
+/** A destination's name, falling back to its id. */
+export function cityName(cityId: string): string {
+  return cityById(cityId)?.name ?? cityId;
+}
+
 /** Display label for an airport code, falling back to the bare code. */
 export function airportLabel(code: AirportCode): string {
   const airport = airportByCode(code);

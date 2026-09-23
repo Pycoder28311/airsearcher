@@ -16,13 +16,13 @@ import {
 import { loadFilters, loadPreferences, loadSearches, removeSearch, savePreferences, type StoredSearch } from "@/lib/airsearcher/storage";
 import { runSearch, SearchRequestError, usesSerpApi } from "@/lib/airsearcher/search";
 import { addDays, isoDate } from "@/lib/airsearcher/time";
-import type { SearchQuery } from "@/lib/airsearcher/types";
+import type { DestinationSelection, SearchQuery } from "@/lib/airsearcher/types";
 
 /** A sensible starting query: nine passengers from each Greek airport, a fortnight away. */
 function initialQuery(): SearchQuery {
   const departure = addDays(isoDate(new Date()), 14);
   return {
-    destination: { cityId: "", airports: [] },
+    destinations: [],
     origins: GREEK_ORIGIN_DEFAULTS.map((airport) => ({
       airport,
       passengers: DEFAULT_PASSENGERS_PER_ORIGIN,
@@ -76,6 +76,20 @@ export default function HomePage() {
 
   const update = (next: Partial<SearchQuery>) =>
     setQuery((current) => ({ ...current, ...next }));
+
+  /** Adds the destination the map confirmed, or replaces the one it edited. */
+  const upsertDestination = (next: DestinationSelection) =>
+    setQuery((current) => {
+      const known = current.destinations.some((place) => place.cityId === next.cityId);
+      return {
+        ...current,
+        destinations: known
+          ? current.destinations.map((place) =>
+              place.cityId === next.cityId ? next : place,
+            )
+          : [...current.destinations, next],
+      };
+    });
 
   const search = async () => {
     if (searching) return;
@@ -169,19 +183,24 @@ export default function HomePage() {
       />
 
       <MapModal
-        // Remounting on open seeds the map from the current destination.
+        // Remounting on open seeds the map from the destination being edited.
         key={mapCityId ?? "map-closed"}
         open={mapCityId !== null}
         onClose={() => setMapCityId(null)}
         initialCityId={mapCityId ?? undefined}
-        value={query.destination}
+        value={
+          query.destinations.find((place) => place.cityId === mapCityId) ?? {
+            cityId: mapCityId,
+            airports: [],
+          }
+        }
         onConfirm={(destination) => {
-          update({
-            destination: {
-              cityId: destination.cityId ?? query.destination.cityId,
+          if (destination.cityId) {
+            upsertDestination({
+              cityId: destination.cityId,
               airports: destination.airports,
-            },
-          });
+            });
+          }
           setMapCityId(null);
         }}
       />

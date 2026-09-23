@@ -6,7 +6,8 @@ import { colorSecondary, grayLight, radius } from "@/config/theme";
 import { describeTripLength } from "@/lib/airsearcher/queryPlan";
 import { formatAge, formatDate } from "@/lib/airsearcher/time";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
-import { cityById } from "@/data/places";
+import { cityName } from "@/data/places";
+import { destinationsOf } from "@/lib/airsearcher/types";
 
 /**
  * What was searched, how much of it survives the filters, and — when the stored
@@ -27,7 +28,7 @@ export default function ResultsHeader({
   stale: boolean;
 }) {
   const { query } = entry;
-  const city = cityById(query.destination.cityId);
+  const destinations = destinationsOf(query);
 
   const dates =
     query.dateMode === "exact"
@@ -51,12 +52,18 @@ export default function ResultsHeader({
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <Text
           size="big"
-          value={city?.name ?? query.destination.cityId}
+          value={destinations.map((place) => cityName(place.cityId)).join(" + ")}
           className="font-semibold text-gray-900"
         />
         <Text
           size="small"
-          value={query.destination.airports.join(", ")}
+          value={destinations
+            .map((place) =>
+              destinations.length === 1
+                ? place.airports.join(", ")
+                : `${cityName(place.cityId)}: ${place.airports.join(", ")}`,
+            )
+            .join(" · ")}
           className="text-gray-500"
         />
         <Button styleType="underline" href="/" className="ml-auto">

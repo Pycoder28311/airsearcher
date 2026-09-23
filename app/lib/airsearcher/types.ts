@@ -225,8 +225,26 @@ export interface ArrangementTotals {
 export type TripType = "round-trip" | "one-way";
 export type DateMode = "exact" | "advanced";
 
+/** One chosen destination: a city or rural place, and the airports to search. */
+export interface DestinationSelection {
+  cityId: string;
+  airports: AirportCode[];
+}
+
 export interface SearchQuery {
-  destination: { cityId: string; airports: AirportCode[] };
+  /**
+   * Every destination being compared. Flights to all of them come out of the
+   * same requests, because one request carries a comma-separated list of
+   * arrival airports.
+   */
+  destinations: DestinationSelection[];
+  /**
+   * The single destination of a search saved before several were allowed, and
+   * the shape the API routes still validate. Written alongside `destinations`
+   * when a query is sent to the server, with every airport merged into it;
+   * `destinationsOf` is the only thing that should read it.
+   */
+  destination?: DestinationSelection;
   origins: OriginGroup[];
   gatheringAirport: AirportCode;
   tripType: TripType;
@@ -259,6 +277,36 @@ export interface SearchQuery {
    * asked for, because SerpApi costs a request per candidate date.
    */
   rangeWithSerpApi?: boolean;
+}
+
+/** Every destination of a query, whichever shape it was saved in. */
+export function destinationsOf(query: SearchQuery): DestinationSelection[] {
+  if (Array.isArray(query.destinations) && query.destinations.length > 0) {
+    return query.destinations;
+  }
+  const legacy = query.destination;
+  return legacy && legacy.airports.length > 0 ? [legacy] : [];
+}
+
+/** Every airport being searched, across all destinations, without duplicates. */
+export function destinationAirports(query: SearchQuery): AirportCode[] {
+  return [...new Set(destinationsOf(query).flatMap((d) => d.airports))];
+}
+
+/**
+ * The same query with the legacy single-destination field filled in, for the
+ * API routes that still validate it. Planning is unaffected: the planner reads
+ * `destinations`, and the merged airport list yields exactly the same legs.
+ */
+export function withLegacyDestination(query: SearchQuery): SearchQuery {
+  const destinations = destinationsOf(query);
+  return {
+    ...query,
+    destination: {
+      cityId: destinations[0]?.cityId ?? "",
+      airports: destinationAirports(query),
+    },
+  };
 }
 
 /** Which routings the search is allowed to consider. */

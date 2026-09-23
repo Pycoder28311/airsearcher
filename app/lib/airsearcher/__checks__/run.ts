@@ -38,6 +38,7 @@ import { applyScopedFilters } from "@/lib/airsearcher/filtering";
 import { DEFAULT_FILTERS } from "@/lib/airsearcher/config/filters";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { buildSearchResult, usesSerpApi } from "@/lib/airsearcher/search";
+import { MAX_AIRPORTS_PER_REQUEST } from "@/lib/airsearcher/config/constants";
 import { buildPriceGrid, pairKey } from "@/lib/airsearcher/priceGrid";
 import { normalizeTravelpayoutsResponse } from "@/lib/airsearcher/travelpayouts";
 import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/storage";
@@ -48,6 +49,7 @@ import { MIN_GATHER_BUFFER_MINUTES } from "@/lib/airsearcher/config/constants";
 import { EUROPE_CITIES_BY_ID } from "@/data/europeCities";
 import { airportByCode } from "@/data/places";
 import {
+  destinationsOf,
   stopAirportsOf,
   type Arrangement,
   type NormalizedFlight,
@@ -131,7 +133,7 @@ check("enumerateRoutings collapses to one when only direct is allowed", () => {
 /* ── Query planning — the SerpApi-minimisation requirement ──────────────── */
 
 const QUERY: SearchQuery = {
-  destination: { cityId: "de-berlin", airports: ["BER"] },
+  destinations: [{ cityId: "de-berlin", airports: ["BER"] }],
   origins: ORIGINS,
   gatheringAirport: "ATH",
   tripType: "round-trip",
@@ -434,13 +436,111 @@ check("an excluded date is never searched", () => {
   assert.ok(!plan.some((s) => s.date === "2026-09-03"));
 });
 
+
+/* ── Several destinations in one search ──────────────────────────────────── */
+
+const TWO_CITIES: SearchQuery = {
+  ...QUERY,
+  destinations: [
+    { cityId: "de-berlin", airports: ["BER"] },
+    { cityId: "fr-paris", airports: ["CDG", "ORY"] },
+  ],
+};
+
+check("a second destination rides along in the same requests", () => {
+  const plan = planSearches(TWO_CITIES);
+  const routes = new Set(plan.map((search) => `${search.from}-${search.to}`));
+  assert.ok(routes.has("ATH-BER") && routes.has("ATH-CDG") && routes.has("ATH-ORY"));
+  // Still one outbound and one return request, as for a single destination.
+  assert.equal(costOf(plan), costOf(planSearches(QUERY)));
+  assert.deepEqual(planRequestBatches(plan), [
+    {
+      direction: "outbound",
+      departureId: "ATH,HER,SKG",
+      arrivalId: "ATH,BER,CDG,ORY",
+      date: "2026-09-14",
+    },
+    {
+      direction: "return",
+      departureId: "ATH,BER,CDG,ORY",
+      arrivalId: "ATH,HER,SKG",
+      date: "2026-09-21",
+    },
+  ]);
+});
+
+check("too many airports for one request split it, covering every route once", () => {
+  const crowded: SearchQuery = {
+    ...QUERY,
+    destinations: [
+      { cityId: "uk-london", airports: ["LHR", "LGW", "STN", "LTN", "LCY", "SEN"] },
+      { cityId: "fr-paris", airports: ["CDG", "ORY"] },
+    ],
+  };
+  const plan = planSearches(crowded);
+  const batches = planRequestBatches(plan);
+  // 9 destination airports plus the hub need two arrival groups each way.
+  assert.equal(costOf(plan), 4);
+  for (const batch of batches) {
+    assert.ok(batch.departureId.split(",").length <= MAX_AIRPORTS_PER_REQUEST);
+    assert.ok(batch.arrivalId.split(",").length <= MAX_AIRPORTS_PER_REQUEST);
+  }
+  // Every planned leg belongs to exactly one batch, so nothing is lost or asked twice.
+  for (const search of plan) {
+    const covering = batches.filter(
+      (batch) =>
+        batch.direction === search.direction &&
+        batch.date === search.date &&
+        batch.departureId.split(",").includes(search.from) &&
+        batch.arrivalId.split(",").includes(search.to),
+    );
+    assert.equal(covering.length, 1, `${search.from}->${search.to} covered ${covering.length} times`);
+  }
+});
+
+check("several destinations cost no more across a date range with open nights", () => {
+  const range: SearchQuery = {
+    ...FLEXIBLE,
+    destinations: TWO_CITIES.destinations,
+  };
+  assert.equal(costOf(planSearches(range)), costOf(planSearches(FLEXIBLE)));
+  for (const search of planSearches(range)) {
+    assert.ok(search.date >= "2026-09-01" && search.date <= "2026-09-10");
+  }
+});
+
+check("arrangements are built for every destination, each keeping its own city", () => {
+  const range: SearchQuery = { ...FLEXIBLE, destinations: TWO_CITIES.destinations };
+  const built = buildSearchResult(range, DEFAULT_RANKING_CONFIG, mockPool(planSearches(range)));
+  const cities = new Set(built.arrangements.map((a) => a.destination.cityId));
+  assert.deepEqual([...cities].sort(), ["de-berlin", "fr-paris"]);
+  for (const arrangement of built.arrangements) {
+    const place = range.destinations.find((p) => p.cityId === arrangement.destination.cityId);
+    assert.ok(place?.airports.includes(arrangement.destination.airport));
+  }
+});
+
+check("the key ignores destination order and still matches an old single-city search", () => {
+  const reordered: SearchQuery = {
+    ...TWO_CITIES,
+    destinations: [...TWO_CITIES.destinations].reverse(),
+  };
+  assert.equal(searchKeyOf(TWO_CITIES), searchKeyOf(reordered));
+  assert.notEqual(searchKeyOf(TWO_CITIES), searchKeyOf(QUERY));
+  // A search saved with the old single-destination field keeps its old key.
+  const legacy = { ...QUERY, destinations: [], destination: QUERY.destinations[0] };
+  assert.equal(searchKeyOf(legacy), searchKeyOf(QUERY));
+  assert.deepEqual(destinationsOf(legacy), QUERY.destinations);
+  assert.deepEqual(planSearches(legacy), planSearches(QUERY));
+});
+
 /* ── Search key ──────────────────────────────────────────────────────────── */
 
 check("searchKeyOf is independent of field order", () => {
   const reordered: SearchQuery = {
     ...QUERY,
     origins: [...QUERY.origins].reverse(),
-    destination: { ...QUERY.destination, airports: ["BER"] },
+    destinations: [{ cityId: "de-berlin", airports: ["BER"] }],
   };
   assert.equal(searchKeyOf(QUERY), searchKeyOf(reordered));
 });
