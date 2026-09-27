@@ -69,6 +69,24 @@ export interface StoredSearch {
     records?: FlightRecord[];
     error?: string;
   };
+  /**
+   * What made this entry. Absent means a normal search (SerpApi and/or
+   * Travelpayouts); "google-curl" means it was built only from pasted Google
+   * Flights cURLs.
+   */
+  kind?: "google-curl";
+  /**
+   * Flights from pasted Google Flights cURLs, built by the same pipeline.
+   * Flight data only — the cURLs themselves hold the user's session and are
+   * never stored.
+   */
+  googleCurl?: {
+    arrangements: Arrangement[];
+    priceGrid?: StoredPriceGrid;
+    records?: FlightRecord[];
+    /** Rows with no flights, flights that matched no route, and similar. */
+    warnings?: string[];
+  };
 }
 
 /** Ranking preferences plus the calendar's date rules, stored together. */
@@ -235,6 +253,7 @@ function withoutRecords(entry: StoredSearch): StoredSearch {
     ...entry,
     records: undefined,
     travelpayouts: entry.travelpayouts && { ...entry.travelpayouts, records: undefined },
+    googleCurl: entry.googleCurl && { ...entry.googleCurl, records: undefined },
   };
 }
 

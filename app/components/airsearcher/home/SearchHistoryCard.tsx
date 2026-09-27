@@ -41,7 +41,9 @@ export default function SearchHistoryCard({
     .map((place) => cityName(place.cityId))
     .join(" + ");
 
-  const gathered = (entry.records ?? []).reduce(
+  const curlOnly = entry.kind === "google-curl";
+  const arrangements = curlOnly ? (entry.googleCurl?.arrangements ?? []) : entry.arrangements;
+  const gathered = ((curlOnly ? entry.googleCurl?.records : entry.records) ?? []).reduce(
     (sum, record) => sum + record.flights.length,
     0,
   );
@@ -61,8 +63,8 @@ export default function SearchHistoryCard({
     .join(" · ");
 
   const cheapest =
-    entry.arrangements.length > 0
-      ? Math.min(...entry.arrangements.map((a) => a.totals.totalPrice))
+    arrangements.length > 0
+      ? Math.min(...arrangements.map((a) => a.totals.totalPrice))
       : null;
 
   return (
@@ -83,8 +85,8 @@ export default function SearchHistoryCard({
       />
       <Text
         size="very small"
-        value={`${entry.arrangements.length} result${
-          entry.arrangements.length === 1 ? "" : "s"
+        value={`${curlOnly ? "Google cURL · " : ""}${arrangements.length} result${
+          arrangements.length === 1 ? "" : "s"
         }${cheapest !== null ? ` · from ${cheapest} ${CURRENCY}` : ""}`}
         className="text-gray-500"
       />

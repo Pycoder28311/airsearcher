@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Text from "@/framework/ui/iconText/Text";
 import { useAlert } from "@/framework/ui/useAlert";
 import SearchPanel from "@/components/airsearcher/home/SearchPanel";
 import SearchHistoryList from "@/components/airsearcher/home/SearchHistoryList";
+import CurlRequestsPanel from "@/components/airsearcher/home/curl/CurlRequestsPanel";
 import AdvancedCalendarModal from "@/components/airsearcher/calendar/AdvancedCalendarModal";
 import MapModal from "@/components/airsearcher/map/MapModal";
 import {
@@ -49,6 +50,8 @@ export default function HomePage() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [mapCityId, setMapCityId] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  /** True while pasted cURLs are running; the main search waits for them. */
+  const [curlRunning, setCurlRunning] = useState(false);
   /**
    * localStorage is unavailable during the server render, so the parts that
    * depend on it only render once mounted — otherwise the cost line would
@@ -92,7 +95,7 @@ export default function HomePage() {
     });
 
   const search = async () => {
-    if (searching) return;
+    if (searching || curlRunning) return;
     setSearching(true);
     try {
       const filters = loadFilters();
@@ -125,6 +128,16 @@ export default function HomePage() {
     }
   };
 
+  const openCurlResult = useCallback(
+    (entry: StoredSearch) => {
+      setHistory(loadSearches());
+      const found = entry.googleCurl?.arrangements.length ?? 0;
+      showAlert("Success", `Built ${found} arrangements from the pasted cURLs.`);
+      router.push(`/results?search=${entry.id}&source=google-curl`);
+    },
+    [router, showAlert],
+  );
+
   const remove = (id: string) => {
     removeSearch(id);
     setHistory(loadSearches());
@@ -149,9 +162,16 @@ export default function HomePage() {
             query={query}
             onChange={update}
             onSearch={search}
-            searching={searching}
+            searching={searching || curlRunning}
             onOpenCalendar={() => setCalendarOpen(true)}
             onOpenMap={setMapCityId}
+          />
+
+          <CurlRequestsPanel
+            query={query}
+            disabled={searching}
+            onRunningChange={setCurlRunning}
+            onFinished={openCurlResult}
           />
 
           <SearchHistoryList

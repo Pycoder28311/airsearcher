@@ -394,3 +394,44 @@ export async function runSearch(
     requestCount: live.requestCount,
   };
 }
+
+/**
+ * Builds a result from flights gathered by pasted Google Flights cURLs.
+ *
+ * The same pool, grouping, ranking and price grid as any other source, so the
+ * results page treats it exactly like SerpApi. It never reuses a cached entry
+ * — a cURL run is always an explicit, fresh result — and its key is prefixed
+ * so a normal search can never mistake it for a cached SerpApi result.
+ */
+export function runCurlSearch(
+  query: SearchQuery,
+  filters: FilterState,
+  preferences: RankingPreferences,
+  records: FlightRecord[],
+  warnings: string[],
+): StoredSearch {
+  const built = buildSearchResult(
+    query,
+    { ...preferences, weights: weightsOf(filters) },
+    poolFromRecords(records),
+  );
+
+  const entry: StoredSearch = {
+    id: `search-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    savedAt: new Date().toISOString(),
+    label: labelFor(query),
+    key: `curl:${searchKeyOf(query)}`,
+    query,
+    kind: "google-curl",
+    arrangements: [],
+    googleCurl: {
+      arrangements: sortArrangements(built.arrangements, "score"),
+      priceGrid: built.priceGrid,
+      records,
+      warnings,
+    },
+  };
+
+  saveSearch(entry);
+  return entry;
+}

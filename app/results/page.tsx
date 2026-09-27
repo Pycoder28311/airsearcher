@@ -39,12 +39,48 @@ import {
 import { daysBetween } from "@/lib/airsearcher/time";
 
 /** Which API's results the page is showing. */
-type ResultSource = "serpapi" | "travelpayouts";
+type ResultSource = "serpapi" | "travelpayouts" | "google-curl";
 
 const SOURCES: { id: ResultSource; label: string }[] = [
   { id: "serpapi", label: "SerpApi" },
   { id: "travelpayouts", label: "Travelpayouts" },
+  { id: "google-curl", label: "Google (cURL)" },
 ];
+
+function isSource(value: string | null): value is ResultSource {
+  return SOURCES.some((tab) => tab.id === value);
+}
+
+/**
+ * The sources an entry has results for. A cURL entry has only its own; a
+ * search without SerpApi has only Travelpayouts.
+ */
+function sourcesOf(entry: StoredSearch): ResultSource[] {
+  if (entry.kind === "google-curl") return ["google-curl"];
+  const sources: ResultSource[] = usesSerpApi(entry.query)
+    ? ["serpapi", "travelpayouts"]
+    : ["travelpayouts"];
+  if (entry.googleCurl) sources.push("google-curl");
+  return sources;
+}
+
+/** The chosen source when the entry has it, otherwise its first one. */
+function activeSourceOf(entry: StoredSearch, chosen: ResultSource): ResultSource {
+  const sources = sourcesOf(entry);
+  return sources.includes(chosen) ? chosen : sources[0];
+}
+
+function arrangementsFor(entry: StoredSearch, source: ResultSource) {
+  if (source === "serpapi") return entry.arrangements;
+  if (source === "travelpayouts") return entry.travelpayouts?.arrangements ?? [];
+  return entry.googleCurl?.arrangements ?? [];
+}
+
+function priceGridFor(entry: StoredSearch, source: ResultSource) {
+  if (source === "serpapi") return entry.priceGrid;
+  if (source === "travelpayouts") return entry.travelpayouts?.priceGrid;
+  return entry.googleCurl?.priceGrid;
+}
 
 function ResultsView() {
   const params = useSearchParams();
@@ -52,6 +88,7 @@ function ResultsView() {
   const floating = useFloatingWindows();
 
   const searchId = params.get("search");
+  const requestedSource = params.get("source");
 
   const [entry, setEntry] = useState<StoredSearch | null>(null);
   const [filters, setFilters] = useState<FilterState | null>(null);
@@ -60,7 +97,9 @@ function ResultsView() {
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [now, setNow] = useState<number | null>(null);
-  const [source, setSource] = useState<ResultSource>("serpapi");
+  const [source, setSource] = useState<ResultSource>(
+    isSource(requestedSource) ? requestedSource : "serpapi",
+  );
   // Page state only, never FilterState: a date-pair pick is a view of this one
   // result set and must not leak into the next search.
   const [selectedPair, setSelectedPair] = useState<DatePair | null>(null);
@@ -83,7 +122,9 @@ function ResultsView() {
     if (found && isStale(found)) {
       showAlert(
         "Warning",
-        "These results are more than a day old and should be recalculated with SerpApi.",
+        found.kind === "google-curl"
+          ? "These results are more than a day old. Copy fresh cURLs from Google Flights to recalculate them."
+          : "These results are more than a day old and should be recalculated with SerpApi.",
         { durationMs: 8000 },
       );
     }
@@ -92,19 +133,14 @@ function ResultsView() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const rangeSearch = entry?.query.dateMode === "advanced";
-  // A search without SerpApi has only Travelpayouts results, so there is nothing to switch.
-  const bothSources = entry ? usesSerpApi(entry.query) : true;
-  const activeSource: ResultSource = bothSources ? source : "travelpayouts";
+  const sources = entry ? sourcesOf(entry) : [];
+  const activeSource = entry ? activeSourceOf(entry, source) : source;
 
   // The only thing the tab changes: which API's arrangements feed the pipeline.
   const arrangements = useMemo(() => {
     if (!entry) return [];
     // Searches saved before duplicates were removed can still hold them.
-    return uniqueArrangements(
-      activeSource === "serpapi"
-        ? entry.arrangements
-        : (entry.travelpayouts?.arrangements ?? []),
-    );
+    return uniqueArrangements(arrangementsFor(entry, activeSource));
   }, [entry, activeSource]);
 
   /**
@@ -208,12 +244,12 @@ function ResultsView() {
           stale={isStale(entry, now)}
         />
 
-        {bothSources && (
+        {sources.length > 1 && (
           <div className="flex flex-wrap items-center gap-2">
-            {SOURCES.map((tab) => (
+            {SOURCES.filter((tab) => sources.includes(tab.id)).map((tab) => (
               <Button
                 key={tab.id}
-                styleType={source === tab.id ? "primary" : "tertiary"}
+                styleType={activeSource === tab.id ? "primary" : "tertiary"}
                 onClick={() => {
                   // Arrangement ids repeat across APIs, so open cards do not carry over.
                   setOpenIds(new Set());
@@ -242,14 +278,17 @@ function ResultsView() {
           />
         )}
 
+        {activeSource === "google-curl" &&
+          entry.googleCurl?.warnings?.map((warning) => (
+            <Text key={warning} size="very small" icon="info" value={warning} className="text-gray-500" />
+          ))}
+
         {rangeSearch && (
           <DateRangeView
             query={entry.query}
             arrangements={visible}
             stored={arrangements}
-            floor={
-              activeSource === "serpapi" ? entry.priceGrid : entry.travelpayouts?.priceGrid
-            }
+            floor={priceGridFor(entry, activeSource)}
             selectedPair={selectedPair}
             onSelectPair={setSelectedPair}
           />

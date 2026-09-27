@@ -121,7 +121,8 @@ export default function FlightDataDialog({
   onClose: () => void;
 }) {
   // Searches saved before duplicates were removed can still hold them.
-  const records = (entry.records ?? []).map((record) => ({
+  const source = entry.kind === "google-curl" ? entry.googleCurl?.records : entry.records;
+  const records = (source ?? []).map((record) => ({
     ...record,
     flights: uniqueFlights(record.flights),
   }));
