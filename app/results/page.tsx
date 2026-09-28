@@ -8,6 +8,7 @@ import { useAlert } from "@/framework/ui/useAlert";
 import { colorSecondary, grayMid } from "@/config/theme";
 import FilterSidebar from "@/components/airsearcher/filters/FilterSidebar";
 import SidebarToggle from "@/components/airsearcher/common/SidebarToggle";
+import CurlRequestSummary from "@/components/airsearcher/results/CurlRequestSummary";
 import DateRangeView from "@/components/airsearcher/results/DateRangeView";
 import { describePair } from "@/components/airsearcher/results/PriceGrid";
 import ExpandAllToggle from "@/components/airsearcher/results/ExpandAllToggle";
@@ -36,6 +37,7 @@ import {
   type StoredPreferences,
   type StoredSearch,
 } from "@/lib/airsearcher/storage";
+import { storageError, storageReady } from "@/lib/airsearcher/storageClient";
 import { daysBetween } from "@/lib/airsearcher/time";
 
 /** Which API's results the page is showing. */
@@ -104,33 +106,45 @@ function ResultsView() {
   // result set and must not leak into the next search.
   const [selectedPair, setSelectedPair] = useState<DatePair | null>(null);
 
-  /* eslint-disable react-hooks/set-state-in-effect --
-     Reading browser storage is exactly the "subscribe to an external system"
-     case effects exist for: localStorage does not exist during the server
-     render, so this cannot happen any earlier without a hydration mismatch. */
+  /* Reading saved data is exactly the "subscribe to an external system" case
+     effects exist for: it is loaded from the local database once the page is
+     in the browser, so this cannot happen any earlier. */
   useEffect(() => {
-    const found = searchId ? findSearchById(searchId) : null;
-    const prefs = loadPreferences();
+    let cancelled = false;
+    void storageReady().then(() => {
+      if (cancelled) return;
+      if (storageError()) {
+        showAlert(
+          "Warning",
+          "Saved searches couldn't be loaded from the local database. Is “npm run dev” running?",
+          { durationMs: 8000 },
+        );
+      }
+      const found = searchId ? findSearchById(searchId) : null;
+      const prefs = loadPreferences();
 
-    setEntry(found);
-    setFilters(loadFilters());
-    setPreferences(prefs);
-    setSidebarOpen(!prefs.sidebarCollapsed);
-    setNow(Date.now());
-    setSelectedPair(null);
+      setEntry(found);
+      setFilters(loadFilters());
+      setPreferences(prefs);
+      setSidebarOpen(!prefs.sidebarCollapsed);
+      setNow(Date.now());
+      setSelectedPair(null);
 
-    if (found && isStale(found)) {
-      showAlert(
-        "Warning",
-        found.kind === "google-curl"
-          ? "These results are more than a day old. Copy fresh cURLs from Google Flights to recalculate them."
-          : "These results are more than a day old and should be recalculated with SerpApi.",
-        { durationMs: 8000 },
-      );
-    }
+      if (found && isStale(found)) {
+        showAlert(
+          "Warning",
+          found.kind === "google-curl"
+            ? "These results are more than a day old. Copy fresh cURLs from Google Flights to recalculate them."
+            : "These results are more than a day old and should be recalculated with SerpApi.",
+          { durationMs: 8000 },
+        );
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchId]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const rangeSearch = entry?.query.dateMode === "advanced";
   const sources = entry ? sourcesOf(entry) : [];
@@ -262,6 +276,21 @@ function ResultsView() {
             ))}
           </div>
         )}
+
+        {activeSource === "google-curl" &&
+          (entry.googleCurl?.requests ? (
+            <CurlRequestSummary
+              requests={entry.googleCurl.requests}
+              uniqueFlights={entry.googleCurl.uniqueFlights}
+            />
+          ) : (
+            <Text
+              size="very small"
+              icon="info"
+              value="This search was saved before the flights read per Google request were recorded. Run it again to see them."
+              className="text-gray-500"
+            />
+          ))}
 
         {activeSource === "travelpayouts" && !entry.travelpayouts && (
           <Text

@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Button from "@/framework/ui/buttons/Button";
 import Input from "@/framework/ui/input/Input";
 import Text from "@/framework/ui/iconText/Text";
@@ -13,6 +14,13 @@ import DateField, { dateError } from "./DateField";
 import DepartureDropdown from "./DepartureDropdown";
 import DestinationsField from "./DestinationsField";
 import TripTypeToggle from "./TripTypeToggle";
+
+/**
+ * The SerpApi search: its date-range checkbox, cost line and Search button.
+ * Hidden while the Google session cURL is the only way to search; the code,
+ * the confirmation and `onSearch` all stay as they are.
+ */
+const SHOW_SERPAPI_SEARCH = false;
 
 /**
  * The main search interface: trip type, departures, destination, dates, and the
@@ -29,6 +37,7 @@ export default function SearchPanel({
   searching,
   onOpenCalendar,
   onOpenMap,
+  children,
 }: {
   query: SearchQuery;
   onChange: (next: Partial<SearchQuery>) => void;
@@ -36,6 +45,8 @@ export default function SearchPanel({
   searching: boolean;
   onOpenCalendar: () => void;
   onOpenMap: (cityId: string) => void;
+  /** Shown at the bottom of the same card: the Google session cURL. */
+  children?: ReactNode;
 }) {
   const { openModal, closeModal } = useApp();
 
@@ -134,7 +145,7 @@ export default function SearchPanel({
         <Text size="small" value="Same airline for all flights" className="text-gray-800" />
       </label>
 
-      {query.dateMode === "advanced" && (
+      {SHOW_SERPAPI_SEARCH && query.dateMode === "advanced" && (
         <label className="flex cursor-pointer items-center gap-2">
           <Input
             type="checkbox"
@@ -149,6 +160,7 @@ export default function SearchPanel({
         </label>
       )}
 
+      {SHOW_SERPAPI_SEARCH && (
       <div
         className={`flex flex-wrap items-center justify-between gap-3 border-t ${grayMid.border} pt-4`}
       >
@@ -172,6 +184,9 @@ export default function SearchPanel({
           />
         </Button>
       </div>
+      )}
+
+      {children}
     </section>
   );
 }

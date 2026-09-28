@@ -25,7 +25,7 @@ export const DEFAULT_GATHERING_AIRPORT = "ATH";
 export const GREEK_ORIGIN_DEFAULTS = ["ATH", "SKG", "HER"] as const;
 
 /** How many passengers each departure airport starts with. */
-export const DEFAULT_PASSENGERS_PER_ORIGIN = 9;
+export const DEFAULT_PASSENGERS_PER_ORIGIN = 1;
 
 /** The nights an unspecified-length trip may last, until the user changes them. */
 export const DEFAULT_TRIP_LENGTH_RANGE = { min: 3, max: 7 } as const;

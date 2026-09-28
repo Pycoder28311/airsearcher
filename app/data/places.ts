@@ -76,6 +76,9 @@ export function airportLabel(code: AirportCode): string {
   return airport ? `${airport.code} · ${airport.name}` : code;
 }
 
+/** How many airport matches always stay visible among the city suggestions. */
+const AIRPORT_SLOTS = 3;
+
 export interface PlaceSuggestion {
   kind: "city" | "airport";
   id: string;
@@ -146,5 +149,15 @@ export function searchPlaces(query: string, limit = 8): PlaceSuggestion[] {
           airportCodes: [airport.code],
         }));
 
-  return [...cityMatches, ...airportMatches].slice(0, limit);
+  // An exact code ("stn") puts that airport first. Otherwise cities lead, but
+  // up to AIRPORT_SLOTS airports always stay in view instead of being pushed
+  // out by the cities.
+  const exact = airportMatches.filter((airport) => airport.id.toLowerCase() === needle);
+  const others = airportMatches.filter((airport) => airport.id.toLowerCase() !== needle);
+  const airports = others.slice(0, AIRPORT_SLOTS);
+  const cityRoom = Math.max(0, limit - exact.length - airports.length);
+  const cities = cityMatches.slice(0, cityRoom);
+  // Cities that don't fill their room leave it to more airports.
+  const extra = others.slice(airports.length, airports.length + (cityRoom - cities.length));
+  return [...exact, ...cities, ...airports, ...extra].slice(0, limit);
 }

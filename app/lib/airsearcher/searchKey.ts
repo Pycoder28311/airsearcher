@@ -10,7 +10,7 @@
  * result computed for a different headcount is not reusable.
  */
 
-import { destinationsOf } from "@/lib/airsearcher/types";
+import { mergedDestinations } from "@/lib/airsearcher/types";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 
 function sorted(values: readonly string[]): string[] {
@@ -26,7 +26,7 @@ export function searchKeyOf(query: SearchQuery): string {
 
   // One destination keeps the key it always had, so a search saved before
   // several were allowed is still reused instead of being run again.
-  const places = [...destinationsOf(query)].sort((a, b) => a.cityId.localeCompare(b.cityId));
+  const places = [...mergedDestinations(query)].sort((a, b) => a.cityId.localeCompare(b.cityId));
   const city =
     places.length === 1 ? places[0].cityId : places.map((p) => p.cityId).join("+");
   const destinations =

@@ -121,3 +121,21 @@ export function formatDate(iso: string | null): string {
     year: "numeric",
   });
 }
+
+/**
+ * The range after a click on `iso`: a day before it moves the start there, a
+ * day after it moves the end there, and a day inside moves whichever end is
+ * nearer (the end on a tie), so the range can also be shortened. With no range
+ * yet, the day becomes a one-day range.
+ */
+export function extendRange(
+  range: { start: string; end: string } | null,
+  iso: string,
+): { start: string; end: string } {
+  if (!range) return { start: iso, end: iso };
+  if (iso < range.start) return { start: iso, end: range.end };
+  if (iso > range.end) return { start: range.start, end: iso };
+  return daysBetween(range.start, iso) < daysBetween(iso, range.end)
+    ? { start: iso, end: range.end }
+    : { start: range.start, end: iso };
+}

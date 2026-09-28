@@ -14,6 +14,10 @@ import Panel from "../common/Panel";
  * Holds its own working copy so the list stays live inside the anchored modal,
  * which snapshots whatever it was handed. Nothing is applied until Done.
  * Every airport starts selected, as the brief requires.
+ *
+ * With `live`, as in the hover panel of a destination chip, every tick is
+ * applied at once and there is no Cancel/Done: the panel closes as soon as the
+ * mouse leaves it, so nothing may wait for a button.
  */
 export default function CityAirportPanel({
   cityId,
@@ -21,19 +25,26 @@ export default function CityAirportPanel({
   onApply,
   onOpenMap,
   onClose,
+  live = false,
 }: {
   cityId: string;
   initialSelection: AirportCode[];
   onApply: (airports: AirportCode[]) => void;
   onOpenMap?: (cityId: string) => void;
   onClose: () => void;
+  live?: boolean;
 }) {
   const city = cityById(cityId);
   const airports = airportsOfCity(cityId);
 
   const [selected, setSelected] = useState<AirportCode[]>(
-    initialSelection.length > 0 ? initialSelection : airports.map((a) => a.code),
+    live || initialSelection.length > 0 ? initialSelection : airports.map((a) => a.code),
   );
+
+  const change = (next: AirportCode[]) => {
+    setSelected(next);
+    if (live) onApply(next);
+  };
 
   return (
     <Panel className="w-72">
@@ -61,10 +72,11 @@ export default function CityAirportPanel({
             sublabel: [airport.name, driveLabel(city, airport.code)].filter(Boolean).join(" · "),
           }))}
           selected={selected}
-          onChange={setSelected}
+          onChange={change}
           emptyMessage="No airports listed for this city"
         />
 
+        {!live && (
         <div className="flex justify-end gap-2">
           <Button styleType="tertiary" onClick={onClose}>
             Cancel
@@ -80,6 +92,7 @@ export default function CityAirportPanel({
             Done
           </Button>
         </div>
+        )}
       </div>
     </Panel>
   );

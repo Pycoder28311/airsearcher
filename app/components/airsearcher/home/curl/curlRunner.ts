@@ -4,7 +4,12 @@ import { CURL_MIN_INTERVAL_MS } from "@/lib/airsearcher/config/curl";
 import type { CurlRunResponse } from "@/lib/airsearcher/curl/api";
 import { recordsFromCurlFlights } from "@/lib/airsearcher/curl/records";
 import { runCurlSearch } from "@/lib/airsearcher/search";
-import { loadFilters, loadPreferences, type StoredSearch } from "@/lib/airsearcher/storage";
+import {
+  loadFilters,
+  loadPreferences,
+  type CurlRequestCount,
+  type StoredSearch,
+} from "@/lib/airsearcher/storage";
 import type { FlightRecord, NormalizedFlight, SearchQuery } from "@/lib/airsearcher/types";
 
 export type RowStatus =
@@ -26,6 +31,8 @@ export interface SequenceOutcome {
   flights: NormalizedFlight[];
   warnings: string[];
   succeeded: number;
+  /** Every request that was sent, in order, with the flights it read. */
+  requests: CurlRequestCount[];
   /** Set when an error stopped the run early (not a user Stop). */
   stoppedBecause: string | null;
 }
@@ -49,6 +56,7 @@ export async function runSequence<Id>(
   const flights: NormalizedFlight[] = [];
   const warnings: string[] = [];
   let succeeded = 0;
+  const requests: CurlRequestCount[] = [];
 
   for (const [position, job] of jobs.entries()) {
     const expectedStart = lastFinishedAt === null ? Date.now() : lastFinishedAt + CURL_MIN_INTERVAL_MS;
@@ -60,6 +68,7 @@ export async function runSequence<Id>(
     if (response.ok) {
       succeeded++;
       flights.push(...response.flights);
+      requests.push({ label: job.label, flights: response.flights.length });
       warnings.push(...response.warnings.map((w) => `${job.label}: ${w}`));
       if (response.flights.length === 0) {
         warnings.push(
@@ -71,16 +80,19 @@ export async function runSequence<Id>(
     }
 
     onStatus(job.id, { kind: "failed", message: response.error.message });
+    if (response.error.code !== "aborted") {
+      requests.push({ label: job.label, flights: 0, error: response.error.message });
+    }
     if (response.error.stopRun) {
       const aborted = response.error.code === "aborted";
       for (const rest of jobs.slice(position + 1)) {
         onStatus(rest.id, { kind: "skipped", message: aborted ? "Stopped." : "Not sent: the run stopped." });
       }
-      return { flights, warnings, succeeded, stoppedBecause: aborted ? null : response.error.message };
+      return { flights, warnings, succeeded, requests, stoppedBecause: aborted ? null : response.error.message };
     }
   }
 
-  return { flights, warnings, succeeded, stoppedBecause: null };
+  return { flights, warnings, succeeded, requests, stoppedBecause: null };
 }
 
 /**
@@ -117,6 +129,13 @@ export function finishRun(
     };
   }
 
-  const entry = runCurlSearch(query, loadFilters(), loadPreferences().ranking, records, warnings);
+  const entry = runCurlSearch(
+    query,
+    loadFilters(),
+    loadPreferences().ranking,
+    records,
+    warnings,
+    outcome.requests,
+  );
   return { entry, records };
 }

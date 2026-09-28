@@ -106,15 +106,17 @@ export interface GeneratedSearch {
   from: string[];
   to: string[];
   date: string;
+  /**
+   * "first": the first page, as a new search in the browser returns it.
+   * "all": the full list, as "View more flights" returns it. Default "all".
+   */
+  list?: FlightList;
 }
 
-/**
- * Whether the template's search token (`search[0][3]`) is sent along.
- * The live feasibility test (plan 09, Task 0) confirmed Google accepts a
- * rewritten search — new date, IATA codes, several airports per side — with
- * the token kept.
- */
-export const KEEP_SEARCH_TOKEN = true;
+export type FlightList = "first" | "all";
+
+/** `search[3]`: 0 for the first page, 1 for "View more flights". */
+const LIST_FLAG: Record<FlightList, number> = { first: 0, all: 1 };
 
 /** Place type Google uses for an airport code; 4/5 are its city ids. */
 const AIRPORT_PLACE = 0;
@@ -122,10 +124,12 @@ const AIRPORT_PLACE = 0;
 /**
  * A neutral one-way search, in the exact shape the browser sends, with every
  * setting at its default: any number of stops, economy, 1 adult, no airline or
- * time filters. Nothing is copied from the template's search except the token,
- * so filters that were on when the cURL was copied never carry over.
+ * time filters. Nothing is copied from the template's search, so filters that
+ * were on when the cURL was copied never carry over. The head is empty, as in
+ * the browser's own "View more flights" request: no search token is needed,
+ * for either list.
  */
-function neutralSearch(search: GeneratedSearch, token: string | null): unknown[] {
+function neutralSearch(search: GeneratedSearch): unknown[] {
   const leg = [
     [search.from.map((code) => [code, AIRPORT_PLACE])],
     [search.to.map((code) => [code, AIRPORT_PLACE])],
@@ -149,12 +153,14 @@ function neutralSearch(search: GeneratedSearch, token: string | null): unknown[]
     null, null, null,
     1,
   ];
-  return [[null, null, null, token], settings, 0, 0, 0, 1];
+  return [[], settings, 0, LIST_FLAG[search.list ?? "all"], 0, 1];
 }
 
 /**
- * The template's form body with its search replaced by `search`. The session
- * fields (`at=` and anything else) are kept exactly as copied.
+ * The template's form body with its search replaced by `search`. The `at=`
+ * token is removed: it belongs to the signed-in session, and the request is
+ * sent without cookies (see `prepareCurl`), which Google accepts for a changed
+ * search while it refuses the same change signed in.
  */
 export function rewriteSearch(body: string | null, search: GeneratedSearch): string {
   const unusable = () =>
@@ -170,11 +176,9 @@ export function rewriteSearch(body: string | null, search: GeneratedSearch): str
   const original = parseJson(outer[1]);
   if (!Array.isArray(original) || !Array.isArray(original[1])) throw unusable();
 
-  const head = Array.isArray(original[0]) ? original[0] : [];
-  const token = KEEP_SEARCH_TOKEN && typeof head[3] === "string" ? head[3] : null;
-
   const params = new URLSearchParams(body);
-  params.set("f.req", JSON.stringify([outer[0] ?? null, JSON.stringify(neutralSearch(search, token))]));
+  params.set("f.req", JSON.stringify([outer[0] ?? null, JSON.stringify(neutralSearch(search))]));
+  params.delete("at");
   // URLSearchParams encodes spaces as "+"; the browser sends none, so this is safe.
   return `${params.toString()}&`;
 }

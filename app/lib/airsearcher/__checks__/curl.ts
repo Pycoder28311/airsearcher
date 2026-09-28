@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 
 import { buildCurlArgs, META_MARKER, splitCurlOutput, withRequestId } from "@/lib/airsearcher/curl/args";
-import { generatedJobsFor, validateSearch } from "@/lib/airsearcher/curl/generated";
+import { generatedJobsFor, sessionRequestsFor, validateSearch } from "@/lib/airsearcher/curl/generated";
+import { airports, googleFlightsSearchUrl, tfsFor } from "@/lib/airsearcher/curl/googleLink";
 import { createHourlyCap } from "@/lib/airsearcher/curl/server/hourlyCap";
 import { checkResponse, errorForExitCode } from "@/lib/airsearcher/curl/classify";
 import { CurlError, type CurlErrorCode } from "@/lib/airsearcher/curl/errors";
@@ -390,8 +391,26 @@ async function main() {
     assert.equal(decoded.tripType, "one-way");
     assert.equal(decoded.passengers, 1);
     assert.deepEqual(decoded.legs, [{ from: ["ATH", "SKG"], to: ["LHR", "LGW"], date: "2026-10-09" }]);
-    // The session token is kept byte-for-byte.
-    assert.equal(new URLSearchParams(body).get("at"), "FAKE_TOKEN:1");
+    // Sent anonymously: the signed-in `at=` token is dropped.
+    assert.equal(new URLSearchParams(body).get("at"), null);
+  });
+
+  await check("the rewritten search asks for the first page or every flight, without a search token", () => {
+    const inner = (list?: "first" | "all") =>
+      JSON.parse(JSON.parse(freqOf(rewriteSearch(ROUND_TRIP_BODY, { from: ["ATH"], to: ["LHR"], date: "2026-10-09", list }))!)[1]);
+    assert.deepEqual(inner("first")[0], []);
+    assert.equal(inner("first")[3], 0);
+    assert.equal(inner("all")[3], 1);
+    assert.equal(inner()[3], 1);
+  });
+
+  await check("a session cURL is sent without its cookies; a pasted search keeps them", () => {
+    const signedIn = `${ROUND_TRIP_CURL} -H 'Cookie: SID=secret' -b 'NID=also-secret' -H 'X-Goog-AuthUser: 0'`;
+    const names = (mode: "search" | "template") =>
+      prepareCurl(signedIn, { mode }).headers.map(([name]) => name.toLowerCase());
+    assert.ok(!names("template").some((name) => ["cookie", "x-goog-authuser"].includes(name)));
+    const oneWay = `curl '${URL_BASE}&_reqid=500' -H 'Cookie: SID=secret' --data-raw '${ONE_WAY}'`;
+    assert.ok(prepareCurl(oneWay).headers.some(([name]) => name === "Cookie"));
   });
 
   await check("filters set on the copied search never carry over", () => {
@@ -427,30 +446,45 @@ async function main() {
     );
   });
 
-  await check("a group round trip needs one search per date and direction", () => {
-    const query: SearchQuery = {
-      destinations: [{ cityId: "uk-london", airports: ["LHR", "LGW", "LTN", "STN"] }],
-      origins: [
-        { airport: "ATH", passengers: 4 },
-        { airport: "SKG", passengers: 3 },
-        { airport: "HER", passengers: 2 },
-      ],
-      gatheringAirport: "ATH",
-      tripType: "round-trip",
-      dateMode: "exact",
-      departureDate: "2026-10-08",
-      returnDate: "2026-10-17",
-      dateRange: null,
-      tripDurationDays: null,
-      excludedDates: [],
-      priorityDates: {},
-    };
-    const jobs = generatedJobsFor(query);
-    assert.equal(jobs.length, 2);
+  const GROUP_QUERY: SearchQuery = {
+    destinations: [{ cityId: "uk-london", airports: ["LHR", "LGW", "LTN", "STN"] }],
+    origins: [
+      { airport: "ATH", passengers: 4 },
+      { airport: "SKG", passengers: 3 },
+      { airport: "HER", passengers: 2 },
+    ],
+    gatheringAirport: "ATH",
+    tripType: "round-trip",
+    dateMode: "exact",
+    departureDate: "2026-10-08",
+    returnDate: "2026-10-17",
+    dateRange: null,
+    tripDurationDays: null,
+    excludedDates: [],
+    priorityDates: {},
+  };
+
+  await check("a gathering group round trip: main and feeder searches apart, all valid", () => {
+    const jobs = generatedJobsFor(GROUP_QUERY);
+    // Going: main/direct + feeder hops; returning: the same. Four in all.
+    assert.equal(jobs.length, 4);
+    assert.deepEqual(jobs.map((j) => j.direction), ["outbound", "outbound", "return", "return"]);
     assert.deepEqual(jobs[0].search.from, ["ATH", "HER", "SKG"]);
-    assert.ok(jobs[0].search.to.includes("ATH") && jobs[0].search.to.includes("LHR"));
-    assert.equal(jobs[1].direction, "return");
-    assert.equal(jobs[1].search.date, "2026-10-17");
+    assert.deepEqual(jobs[0].search.to, ["LGW", "LHR", "LTN", "STN"]);
+    assert.deepEqual(jobs[1].search, { from: ["HER", "SKG"], to: ["ATH"], date: "2026-10-08" });
+    assert.equal(jobs[3].search.date, "2026-10-17");
+    // Every generated search passes the server's own check.
+    for (const job of jobs) validateSearch(job.search, "2026-09-28");
+  });
+
+  await check("a one-cURL run sends each search once, as the full list", () => {
+    const jobs = generatedJobsFor(GROUP_QUERY);
+    const requests = sessionRequestsFor(GROUP_QUERY);
+    assert.equal(requests.length, jobs.length);
+    assert.ok(requests.every((r) => r.search.list === "all"));
+    assert.deepEqual(requests.map((r) => r.label), jobs.map((j) => j.label));
+    assert.equal(validateSearch({ from: ["ATH"], to: ["LHR"], date: "2026-10-09", list: "first" }, "2026-09-27").list, "first");
+    throwsCode(() => validateSearch({ from: ["ATH"], to: ["LHR"], date: "2026-10-09", list: "x" }, "2026-09-27"), "parse_error");
   });
 
   await check("the hourly cap refuses the 61st generated search and frees up after an hour", () => {
@@ -484,6 +518,20 @@ async function main() {
     const { flights } = parseShoppingResults(response([null, null, [[overnight, same]], []]), { currency: "EUR", passengers: 1 });
     assert.equal(flights[0].outbound.layovers[0].overnight, true);
     assert.equal(flights[1].outbound.layovers[0].overnight, false);
+  });
+
+  await check("a Google Flights link encodes the search exactly like Google does", () => {
+    // Taken from a link the browser produced: Athens → London, 16 Oct, one-way.
+    const google = "CBwQAhonEgoyMDI2LTEwLTE2agsIAhIHL20vMG4yenIMCAMSCC9tLzA0anBsQAFIAXABggELCP___________wGYAQI";
+    assert.equal(
+      tfsFor({ from: [{ id: "/m/0n2z", type: 2 }], to: [{ id: "/m/04jpl", type: 3 }], date: "2026-10-16" }),
+      google,
+    );
+    const url = new URL(googleFlightsSearchUrl({ from: airports(["ATH", "SKG"]), to: airports(["LHR"]), date: "2026-10-12" }));
+    assert.equal(url.pathname, "/travel/flights/search");
+    assert.equal(url.searchParams.get("curr"), "EUR");
+    const decoded = Buffer.from(url.searchParams.get("tfs")!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("latin1");
+    for (const text of ["2026-10-12", "ATH", "SKG", "LHR"]) assert.ok(decoded.includes(text), text);
   });
 
   console.log(`\n${passed} checks passed.`);

@@ -15,11 +15,12 @@ import {
   GREEK_ORIGIN_DEFAULTS,
 } from "@/lib/airsearcher/config/constants";
 import { loadFilters, loadPreferences, loadSearches, removeSearch, savePreferences, type StoredSearch } from "@/lib/airsearcher/storage";
+import { flushStorage, storageError, storageReady } from "@/lib/airsearcher/storageClient";
 import { runSearch, SearchRequestError, usesSerpApi } from "@/lib/airsearcher/search";
 import { addDays, isoDate } from "@/lib/airsearcher/time";
 import type { DestinationSelection, SearchQuery } from "@/lib/airsearcher/types";
 
-/** A sensible starting query: nine passengers from each Greek airport, a fortnight away. */
+/** A sensible starting query: one passenger from each Greek airport, a fortnight away. */
 function initialQuery(): SearchQuery {
   const departure = addDays(isoDate(new Date()), 14);
   return {
@@ -59,37 +60,58 @@ export default function HomePage() {
    */
   const [now, setNow] = useState<number | null>(null);
 
-  /* eslint-disable react-hooks/set-state-in-effect --
-     Reading browser storage is exactly the "subscribe to an external system"
-     case effects exist for: localStorage does not exist during the server
-     render, so this cannot happen any earlier without a hydration mismatch. */
+  /* Reading saved data is exactly the "subscribe to an external system" case
+     effects exist for: it is loaded from the local database once the page is
+     in the browser, so this cannot happen any earlier. */
   useEffect(() => {
-    setHistory(loadSearches());
-    setNow(Date.now());
+    let cancelled = false;
+    void storageReady().then(() => {
+      if (cancelled) return;
+      if (storageError()) {
+        showAlert(
+          "Warning",
+          "Saved searches and settings couldn't be loaded from the local database. Is “npm run dev” running? Changes won't be saved until the page is reloaded.",
+          { durationMs: 8000 },
+        );
+      }
+      setHistory(loadSearches());
+      setNow(Date.now());
+      // Coming from the navbar's History link: the list only exists once the
+      // saved data has loaded, so the browser couldn't scroll to it earlier.
+      if (window.location.hash === "#history") {
+        window.requestAnimationFrame(() => document.getElementById("history")?.scrollIntoView());
+      }
 
-    // Carry the calendar's saved exclusions and priorities into a new search.
-    const prefs = loadPreferences();
-    setQuery((current) => ({
-      ...current,
-      excludedDates: prefs.dates.excluded,
-      priorityDates: prefs.dates.priority,
-    }));
+      // Carry the calendar's saved exclusions and priorities into a new search.
+      const prefs = loadPreferences();
+      setQuery((current) => ({
+        ...current,
+        excludedDates: prefs.dates.excluded,
+        priorityDates: prefs.dates.priority,
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const update = (next: Partial<SearchQuery>) =>
     setQuery((current) => ({ ...current, ...next }));
 
-  /** Adds the destination the map confirmed, or replaces the one it edited. */
+  /**
+   * Adds the destination the map confirmed, or replaces the city it edited.
+   * Airports added on their own are separate chips and stay as they are.
+   */
   const upsertDestination = (next: DestinationSelection) =>
     setQuery((current) => {
-      const known = current.destinations.some((place) => place.cityId === next.cityId);
+      const isCity = (place: DestinationSelection) =>
+        place.kind !== "airport" && place.cityId === next.cityId;
+      const known = current.destinations.some(isCity);
       return {
         ...current,
         destinations: known
-          ? current.destinations.map((place) =>
-              place.cityId === next.cityId ? next : place,
-            )
+          ? current.destinations.map((place) => (isCity(place) ? next : place))
           : [...current.destinations, next],
       };
     });
@@ -111,6 +133,7 @@ export default function HomePage() {
             ? `Found ${outcome.entry.travelpayouts?.arrangements.length ?? 0} arrangements with Travelpayouts.`
             : `Found ${outcome.entry.arrangements.length} arrangements using ${outcome.requestCount} SerpApi requests.`,
       );
+      await flushStorage();
       router.push(`/results?search=${outcome.entry.id}`);
     } catch (error) {
       const requestsMade = error instanceof SearchRequestError ? error.requestsMade : 0;
@@ -129,10 +152,11 @@ export default function HomePage() {
   };
 
   const openCurlResult = useCallback(
-    (entry: StoredSearch) => {
+    async (entry: StoredSearch) => {
       setHistory(loadSearches());
       const found = entry.googleCurl?.arrangements.length ?? 0;
       showAlert("Success", `Built ${found} arrangements from the pasted cURLs.`);
+      await flushStorage();
       router.push(`/results?search=${entry.id}&source=google-curl`);
     },
     [router, showAlert],
@@ -165,21 +189,24 @@ export default function HomePage() {
             searching={searching || curlRunning}
             onOpenCalendar={() => setCalendarOpen(true)}
             onOpenMap={setMapCityId}
-          />
+          >
+            <CurlRequestsPanel
+              query={query}
+              disabled={searching}
+              onRunningChange={setCurlRunning}
+              onFinished={openCurlResult}
+            />
+          </SearchPanel>
 
-          <CurlRequestsPanel
-            query={query}
-            disabled={searching}
-            onRunningChange={setCurlRunning}
-            onFinished={openCurlResult}
-          />
-
-          <SearchHistoryList
-            entries={history}
-            now={now}
-            onOpen={(id) => router.push(`/results?search=${id}`)}
-            onRemove={remove}
-          />
+          {/* The navbar's History link lands here. */}
+          <div id="history" className="scroll-mt-20">
+            <SearchHistoryList
+              entries={history}
+              now={now}
+              onOpen={(id) => void flushStorage().then(() => router.push(`/results?search=${id}`))}
+              onRemove={remove}
+            />
+          </div>
         </>
       )}
 
@@ -209,7 +236,9 @@ export default function HomePage() {
         onClose={() => setMapCityId(null)}
         initialCityId={mapCityId ?? undefined}
         value={
-          query.destinations.find((place) => place.cityId === mapCityId) ?? {
+          query.destinations.find(
+            (place) => place.kind !== "airport" && place.cityId === mapCityId,
+          ) ?? {
             cityId: mapCityId,
             airports: [],
           }

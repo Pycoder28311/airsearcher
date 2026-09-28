@@ -11,7 +11,14 @@ import {
 } from "@/lib/airsearcher/config/constants";
 import { candidateDates, planSearches } from "@/lib/airsearcher/queryPlan";
 import { costOf, describeCost } from "@/lib/airsearcher/quota";
-import { addDays, daysBetween, formatDate, isoDate, parseIsoDate } from "@/lib/airsearcher/time";
+import {
+  addDays,
+  daysBetween,
+  extendRange,
+  formatDate,
+  isoDate,
+  parseIsoDate,
+} from "@/lib/airsearcher/time";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 import Dialog from "../common/Dialog";
 import Stepper from "../common/Stepper";
@@ -66,7 +73,6 @@ export default function AdvancedCalendarModal({
   const [priority, setPriority] = useState<Record<string, number>>(query.priorityDates);
   /** Set while the pointer is down, so a drag can paint several days. */
   const [painting, setPainting] = useState(false);
-  const [anchor, setAnchor] = useState<string | null>(null);
   const [monthOffset, setMonthOffset] = useState(0);
 
   useEffect(() => {
@@ -117,15 +123,7 @@ export default function AdvancedCalendarModal({
 
   const clickDay = (iso: string) => {
     if (mode === "range") {
-      if (anchor === null) {
-        setAnchor(iso);
-        setRange({ start: iso, end: iso });
-      } else {
-        const start = anchor <= iso ? anchor : iso;
-        const end = anchor <= iso ? iso : anchor;
-        setRange({ start, end });
-        setAnchor(null);
-      }
+      setRange((current) => extendRange(current, iso));
       return;
     }
     setPainting(true);
@@ -155,7 +153,7 @@ export default function AdvancedCalendarModal({
     <Dialog
       open={open}
       onClose={onClose}
-      title="Advanced date search"
+      title="Select date range"
       subtitle="Search a window of departure dates for a trip of fixed or open length."
       width="max-w-3xl"
       footer={
@@ -180,7 +178,6 @@ export default function AdvancedCalendarModal({
               onClick={() => {
                 setExcluded([]);
                 setPriority({});
-                setAnchor(null);
               }}
             >
               Clear marks
@@ -207,8 +204,9 @@ export default function AdvancedCalendarModal({
       }
     >
       <div className="flex flex-col gap-5">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="flex flex-col gap-2">
+        {/* Trip length, with the "unspecified length" switch on its right. */}
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
             {roundTrip && flexible ? (
               <div className="flex flex-wrap gap-4">
                 <label className="flex flex-col gap-1">
@@ -239,7 +237,7 @@ export default function AdvancedCalendarModal({
               </label>
             )}
             {roundTrip && (
-              <label className="flex cursor-pointer items-center gap-2">
+              <label className="flex cursor-pointer items-center gap-2 pb-1">
                 <Input
                   type="checkbox"
                   checked={flexible}
@@ -254,38 +252,7 @@ export default function AdvancedCalendarModal({
             )}
           </div>
 
-          <div className="flex flex-col gap-1">
-            <Text size="very small" value="Clicking a day will…" className="text-gray-500" />
-            <div className="flex gap-1">
-              {MODES.map((option) => (
-                <Button
-                  key={option.value}
-                  styleType={mode === option.value ? "secondary" : "tertiary"}
-                  onClick={() => {
-                    setMode(option.value);
-                    setAnchor(null);
-                  }}
-                >
-                  <Text size="small" value={option.label} />
-                </Button>
-              ))}
-            </div>
-          </div>
         </div>
-
-        {roundTrip && flexible && (
-          <Text
-            size="very small"
-            value="With an unspecified length the whole trip, return included, stays inside the range. Every day is still searched at most once each way, so this adds no SerpApi requests."
-            className="max-w-prose text-gray-400"
-          />
-        )}
-
-        <Text
-          size="very small"
-          value="Excluded dates are never searched, so removing them lowers the request count. Prioritised dates only break ties between results that score almost the same."
-          className="max-w-prose text-gray-400"
-        />
 
         <div className="flex items-center justify-between gap-2">
           <Button styleType="tertiary" onClick={() => setMonthOffset((m) => m - 1)}>
@@ -371,47 +338,41 @@ export default function AdvancedCalendarModal({
           </div>
         )}
 
-        <div className={`flex flex-wrap items-center gap-3 ${radius} border ${grayMid.border} p-3`}>
-          <Text size="very small" value="Quick range" className="text-gray-500" />
-          <Button
-            styleType="tertiary"
-            onClick={() => setRange({ start: today, end: addDays(today, 29) })}
-          >
-            <Text size="very small" value="Next 30 days" />
-          </Button>
-          <Button
-            styleType="tertiary"
-            onClick={() =>
-              setRange({ start: addDays(today, 30), end: addDays(today, 59) })
-            }
-          >
-            <Text size="very small" value="The month after" />
-          </Button>
-        </div>
-
-        <label className="flex flex-col gap-1">
-          <Text size="very small" value="Or type the window" className="text-gray-500" />
-          <div className="flex flex-wrap gap-2">
-            <Input
-              type="date"
-              value={range?.start ?? ""}
-              onChange={(event) =>
-                setRange({
-                  start: event.target.value,
-                  end: range?.end ?? event.target.value,
-                })
+        {/* Quick range on the left, what a click on a day does on the right. */}
+        <div className="flex flex-wrap items-end gap-3">
+          <div className={`flex flex-1 flex-wrap items-center gap-3 ${radius} border ${grayMid.border} p-3`}>
+            <Text size="very small" value="Quick range" className="text-gray-500" />
+            <Button
+              styleType="tertiary"
+              onClick={() => setRange({ start: today, end: addDays(today, 29) })}
+            >
+              <Text size="very small" value="Next 30 days" />
+            </Button>
+            <Button
+              styleType="tertiary"
+              onClick={() =>
+                setRange({ start: addDays(today, 30), end: addDays(today, 59) })
               }
-            />
-            <Input
-              type="date"
-              value={range?.end ?? ""}
-              min={range?.start}
-              onChange={(event) =>
-                setRange({ start: range?.start ?? event.target.value, end: event.target.value })
-              }
-            />
+            >
+              <Text size="very small" value="The month after" />
+            </Button>
           </div>
-        </label>
+
+          <div className="flex flex-col gap-1">
+            <Text size="very small" value="Clicking a day will…" className="text-gray-500" />
+            <div className="flex gap-1">
+              {MODES.map((option) => (
+                <Button
+                  key={option.value}
+                  styleType={mode === option.value ? "secondary" : "tertiary"}
+                  onClick={() => setMode(option.value)}
+                >
+                  <Text size="small" value={option.label} />
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     </Dialog>
   );

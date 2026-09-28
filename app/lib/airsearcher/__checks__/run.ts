@@ -25,7 +25,7 @@ import {
   candidateDates,
   returnDatesFor,
 } from "@/lib/airsearcher/queryPlan";
-import { eachDayInRange } from "@/lib/airsearcher/time";
+import { eachDayInRange, extendRange } from "@/lib/airsearcher/time";
 import { costOf, explainCost } from "@/lib/airsearcher/quota";
 import {
   flightRecordsFromResponses,
@@ -42,14 +42,16 @@ import { MAX_AIRPORTS_PER_REQUEST } from "@/lib/airsearcher/config/constants";
 import { buildPriceGrid, pairKey } from "@/lib/airsearcher/priceGrid";
 import { normalizeTravelpayoutsResponse } from "@/lib/airsearcher/travelpayouts";
 import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/storage";
+import { resetStorageClientForChecks } from "@/lib/airsearcher/storageClient";
 import { toggleAirport, selectCity } from "@/lib/airsearcher/mapSelection";
 import { mockFlightsFor, mockPool } from "@/lib/airsearcher/mockFlights";
 import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
 import { MIN_GATHER_BUFFER_MINUTES } from "@/lib/airsearcher/config/constants";
 import { EUROPE_CITIES_BY_ID } from "@/data/europeCities";
-import { airportByCode } from "@/data/places";
+import { airportByCode, searchPlaces } from "@/data/places";
 import {
   destinationsOf,
+  mergedDestinations,
   stopAirportsOf,
   type Arrangement,
   type NormalizedFlight,
@@ -847,7 +849,7 @@ check("deselecting the last airport clears the selection", () => {
 
 /* ── Storage degrades safely without a browser ──────────────────────────── */
 
-check("storage returns defaults when localStorage is unavailable", () => {
+check("storage returns defaults before the saved data is loaded", () => {
   assert.deepEqual(loadSearches(), []);
   assert.equal(loadFilters().type, "round-trip");
   assert.equal(loadPreferences().sidebarCollapsed, false);
@@ -881,9 +883,7 @@ check("a search saved in the old leg shape still loads, flights unchanged", () =
     },
   ];
 
-  const store = new Map([["airsearcher:searches:v1", JSON.stringify(legacy)]]);
-  const g = globalThis as { window?: unknown };
-  g.window = { localStorage: { getItem: (k: string) => store.get(k) ?? null } };
+  resetStorageClientForChecks({ "airsearcher:searches:v1": JSON.stringify(legacy) });
   try {
     const [entry] = loadSearches();
     assert.ok(entry, "the old entry must not be dropped");
@@ -894,7 +894,7 @@ check("a search saved in the old leg shape still loads, flights unchanged", () =
     assert.equal(leg.return?.main.id, mainBack.id);
     assert.equal(leg.return?.feeder?.id, back.id);
   } finally {
-    delete g.window;
+    resetStorageClientForChecks(null);
   }
 });
 
@@ -1143,6 +1143,52 @@ check("the results pipeline never lists the same arrangement twice", () => {
   const shown = applyScopedFilters(uniqueArrangements(saved), DEFAULT_FILTERS);
   assert.equal(shown.length, base.length);
   assert.equal(new Set(shown.map((a) => a.id)).size, shown.length);
+});
+
+/* ── Destinations: separate chips in the input, merged in the search ──── */
+
+check("a city and an airport added on its own are searched as one city", () => {
+  const split: SearchQuery = {
+    ...QUERY,
+    destinations: [
+      { cityId: "uk-london", airports: ["LGW", "LHR", "LTN"] },
+      { cityId: "uk-london", airports: ["STN"], kind: "airport" },
+    ],
+  };
+  const whole: SearchQuery = {
+    ...QUERY,
+    destinations: [{ cityId: "uk-london", airports: ["LGW", "LHR", "LTN", "STN"] }],
+  };
+  assert.deepEqual(mergedDestinations(split), [
+    { cityId: "uk-london", airports: ["LGW", "LHR", "LTN", "STN"] },
+  ]);
+  // Same saved-search key, and exactly the same requests.
+  assert.equal(searchKeyOf(split), searchKeyOf(whole));
+  assert.deepEqual(planRequestBatches(planSearches(split)), planRequestBatches(planSearches(whole)));
+  // An airport both ticked in its city and added on its own counts once.
+  const twice: SearchQuery = {
+    ...QUERY,
+    destinations: [...split.destinations, { cityId: "uk-london", airports: ["LGW"], kind: "airport" }],
+  };
+  assert.deepEqual(mergedDestinations(twice), mergedDestinations(split));
+});
+
+check("an exact airport code is suggested first, and airports aren't crowded out", () => {
+  assert.equal(searchPlaces("stn")[0]?.id, "STN");
+  const london = searchPlaces("london");
+  assert.equal(london[0]?.kind, "city");
+  assert.ok(london.filter((s) => s.kind === "airport").length >= 3);
+  assert.ok(london.length <= 8);
+});
+
+check("clicking a day extends the date range, or shortens it from inside", () => {
+  const range = { start: "2026-10-10", end: "2026-10-20" };
+  assert.deepEqual(extendRange(null, "2026-10-12"), { start: "2026-10-12", end: "2026-10-12" });
+  assert.deepEqual(extendRange(range, "2026-10-25"), { start: "2026-10-10", end: "2026-10-25" });
+  assert.deepEqual(extendRange(range, "2026-10-05"), { start: "2026-10-05", end: "2026-10-20" });
+  assert.deepEqual(extendRange(range, "2026-10-12"), { start: "2026-10-12", end: "2026-10-20" });
+  assert.deepEqual(extendRange(range, "2026-10-18"), { start: "2026-10-10", end: "2026-10-18" });
+  assert.deepEqual(extendRange(range, "2026-10-15"), { start: "2026-10-10", end: "2026-10-15" });
 });
 
 console.log(`\n${passed} checks passed.`);

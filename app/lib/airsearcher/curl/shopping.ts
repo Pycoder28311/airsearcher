@@ -87,7 +87,7 @@ function tryJson(text: string): unknown {
 export function payloadsOf(body: string): unknown[] {
   const text = body.replace(/^\s*\)\]\}'\s*/, "");
   const payloads: unknown[] = [];
-  let rpcErrors = 0;
+  const rpcErrors: string[] = [];
   let pending = "";
 
   for (const line of text.split("\n")) {
@@ -101,16 +101,19 @@ export function payloadsOf(body: string): unknown[] {
       const envelope = arrayOf(entry);
       if (envelope?.[0] !== "wrb.fr") continue;
       const inner = typeof envelope[2] === "string" ? tryJson(envelope[2]) : undefined;
-      if (inner === undefined || inner === null) rpcErrors++;
+      if (inner === undefined || inner === null) {
+        // Google's error code sits at [5], e.g. [13]; kept for the message.
+        rpcErrors.push(JSON.stringify(envelope[5] ?? null));
+      }
       else payloads.push(inner);
     }
   }
 
   if (payloads.length === 0) {
     throw new CurlError(
-      rpcErrors > 0 ? "session_expired" : "unrecognised_response",
-      rpcErrors > 0
-        ? "Google answered the request with an error. The copied session token has probably expired — copy a fresh cURL."
+      rpcErrors.length > 0 ? "session_expired" : "unrecognised_response",
+      rpcErrors.length > 0
+        ? `Google refused this request (error ${rpcErrors[0]}). A changed request is usually refused; an unchanged one is refused once its session is about 30 minutes old — copy a fresh cURL.`
         : "Google's answer isn't in the expected format. It may have changed; the flights couldn't be read.",
     );
   }

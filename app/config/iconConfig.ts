@@ -18,6 +18,7 @@ import {
   FiArrowLeft,
   FiChevronDown,
   FiChevronUp,
+  FiChevronRight,
   FiDownload,
   FiUpload,
   FiCalendar,
@@ -34,6 +35,7 @@ import {
   FiHelpCircle,
   FiDroplet,
 } from "react-icons/fi";
+import { LuPlane } from "react-icons/lu";
 
 /** String name -> react-icons component. Add more entries as needed. */
 export const ICONS = {
@@ -54,6 +56,7 @@ export const ICONS = {
   "arrow-left": FiArrowLeft,
   "chevron-down": FiChevronDown,
   "chevron-up": FiChevronUp,
+  "chevron-right": FiChevronRight,
   download: FiDownload,
   upload: FiUpload,
   calendar: FiCalendar,
@@ -69,6 +72,7 @@ export const ICONS = {
   analytics: FiBarChart2,
   help: FiHelpCircle,
   palette: FiDroplet,
+  plane: LuPlane,
 } satisfies Record<string, IconType>;
 
 export type IconName = keyof typeof ICONS;

@@ -7,6 +7,7 @@ import Text from "@/framework/ui/iconText/Text";
 import { colorSecondary, grayLight, grayMid, radius } from "@/config/theme";
 import { GREEK_AIRPORTS } from "@/data/greekAirports";
 import { airportByCode } from "@/data/places";
+import { DEFAULT_PASSENGERS_PER_ORIGIN } from "@/lib/airsearcher/config/constants";
 import { bestGatheringAirport } from "@/lib/airsearcher/geo";
 import type { AirportCode, OriginGroup } from "@/lib/airsearcher/types";
 import Stepper from "../common/Stepper";
@@ -131,7 +132,10 @@ export default function DepartureAirportEditor({
                 key={airport.code}
                 styleType="tertiary"
                 onClick={() => {
-                  onChange([...origins, { airport: airport.code, passengers: 0 }]);
+                  onChange([
+                    ...origins,
+                    { airport: airport.code, passengers: DEFAULT_PASSENGERS_PER_ORIGIN },
+                  ]);
                   setQuery("");
                 }}
                 className="w-full justify-start! gap-2 bg-transparent! px-2! py-1.5! text-left"

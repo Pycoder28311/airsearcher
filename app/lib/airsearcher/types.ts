@@ -225,10 +225,16 @@ export interface ArrangementTotals {
 export type TripType = "round-trip" | "one-way";
 export type DateMode = "exact" | "advanced";
 
-/** One chosen destination: a city or rural place, and the airports to search. */
+/**
+ * One chosen destination, as the user added it: a city or rural place with the
+ * airports to search, or — with `kind: "airport"` — a single airport added on
+ * its own, whose `cityId` is the city it belongs to.
+ */
 export interface DestinationSelection {
   cityId: string;
   airports: AirportCode[];
+  /** Absent for a city; "airport" for an airport added on its own. */
+  kind?: "airport";
 }
 
 export interface SearchQuery {
@@ -286,6 +292,21 @@ export function destinationsOf(query: SearchQuery): DestinationSelection[] {
   }
   const legacy = query.destination;
   return legacy && legacy.airports.length > 0 ? [legacy] : [];
+}
+
+/**
+ * The destinations as the search sees them: entries of the same city joined
+ * into one, in the order first added, with every airport once. London with
+ * LGW, LHR, LTN plus Stansted added on its own is searched as London with all
+ * four. The inputs keep them apart; only the search merges them.
+ */
+export function mergedDestinations(query: SearchQuery): DestinationSelection[] {
+  const byCity = new Map<string, AirportCode[]>();
+  for (const place of destinationsOf(query)) {
+    const airports = byCity.get(place.cityId) ?? [];
+    byCity.set(place.cityId, [...new Set([...airports, ...place.airports])]);
+  }
+  return [...byCity.entries()].map(([cityId, airports]) => ({ cityId, airports }));
 }
 
 /** Every airport being searched, across all destinations, without duplicates. */

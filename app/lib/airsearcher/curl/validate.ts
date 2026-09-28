@@ -45,6 +45,14 @@ const DROPPED_HEADERS = new Set([
   "transfer-encoding",
 ]);
 
+/**
+ * What makes a request signed in. A session cURL is sent without them: Google
+ * refuses a changed search from a signed-in session (error 13, or HTTP 400
+ * "xsrf" without the `at=` token) but accepts it anonymously. It also means
+ * the user's login never leaves the browser that pasted it.
+ */
+const SIGN_IN_HEADERS = new Set(["cookie", "authorization", "x-goog-authuser"]);
+
 /** `x-goog-ext-259736195-jspb: ["en-GB","GR","EUR",…]` → "EUR". */
 function currencyOf(headers: [string, string][]): string | null {
   const header = headers.find(([name]) => name.toLowerCase() === "x-goog-ext-259736195-jspb");
@@ -105,7 +113,8 @@ function withAppCurrency(headers: [string, string][]): [string, string][] {
  * "search" — the cURL is run as pasted: it must be a one-way search.
  * "template" — only its session is used; the search itself is replaced
  * (see `rewriteSearch`), so its trip type and passengers don't matter, and its
- * prices are forced into the app's currency.
+ * prices are forced into the app's currency. Its cookies are removed, so the
+ * searches go out anonymously.
  */
 export type CurlMode = "search" | "template";
 
@@ -147,7 +156,10 @@ export function prepareCurl(text: string, options: { mode?: CurlMode } = {}): Pr
     warnings.push(`Prices are quoted for ${search.passengers} passengers and are divided back to one.`);
   }
 
-  const kept = parsed.headers.filter(([name]) => !DROPPED_HEADERS.has(name.toLowerCase()));
+  const kept = parsed.headers.filter(([name]) => {
+    const lower = name.toLowerCase();
+    return !DROPPED_HEADERS.has(lower) && !(template && SIGN_IN_HEADERS.has(lower));
+  });
   return {
     ...parsed,
     headers: template ? withAppCurrency(kept) : kept,

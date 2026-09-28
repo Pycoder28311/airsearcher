@@ -1,0 +1,218 @@
+/**
+ * Offline checks for the local SQLite storage.
+ *
+ * Run with `npx tsx app/lib/airsearcher/__checks__/storage.ts`. The database
+ * checks use a temporary file that is deleted afterwards; the browser checks
+ * stub `fetch` and `window`. Nothing touches the real database or the network.
+ */
+
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { STORAGE_MAX_VALUE_CHARS } from "@/lib/airsearcher/config/storage";
+import { FILTERS_KEY, PREFS_KEY, SEARCHES_KEY } from "@/lib/airsearcher/db/keys";
+import { getValues, importOnce, isImported, openDb, setValue } from "@/lib/airsearcher/db/sqlite";
+import { loadFilters, loadSearches } from "@/lib/airsearcher/storage";
+import {
+  flushStorage,
+  getItem,
+  resetStorageClientForChecks,
+  setItem,
+  storageError,
+  storageReady,
+} from "@/lib/airsearcher/storageClient";
+
+let passed = 0;
+async function check(name: string, fn: () => void | Promise<void>): Promise<void> {
+  try {
+    await fn();
+    passed++;
+    console.log(`  ok  ${name}`);
+  } catch (error) {
+    console.error(`FAIL  ${name}`);
+    throw error;
+  }
+}
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "airsearch-storage-"));
+const tempDb = (name: string) => openDb(path.join(dir, name, "airsearch.sqlite"));
+
+/* ── A fake storage server for the browser checks ────────────────────────── */
+
+interface FakeServer {
+  values: Record<string, string | null>;
+  imported: boolean;
+  puts: { key: string; value: string | null }[];
+  /** PUTs that fail (network error) before one succeeds. */
+  failPuts: number;
+  down: boolean;
+}
+
+function fakeServer(initial: Partial<FakeServer> = {}): FakeServer {
+  const server: FakeServer = {
+    values: { [SEARCHES_KEY]: null, [FILTERS_KEY]: null, [PREFS_KEY]: null },
+    imported: true,
+    puts: [],
+    failPuts: 0,
+    down: false,
+    ...initial,
+  };
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    if (server.down) throw new TypeError("fetch failed");
+    const method = init?.method ?? "GET";
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    if (method === "GET") return json({ values: server.values, imported: server.imported });
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    if (method === "POST") {
+      const values = body.values as Record<string, string>;
+      if (!server.imported) Object.assign(server.values, values);
+      const did = !server.imported;
+      server.imported = true;
+      return json({ imported: did });
+    }
+    if (server.failPuts > 0) {
+      server.failPuts--;
+      throw new TypeError("fetch failed");
+    }
+    server.puts.push({ key: body.key as string, value: body.value as string | null });
+    server.values[body.key as string] = body.value as string | null;
+    return json({ ok: true });
+  }) as typeof fetch;
+  return server;
+}
+
+const listeners = new Set<string>();
+function fakeWindow(local: Record<string, string> = {}): void {
+  (globalThis as { window?: unknown }).window = {
+    localStorage: { getItem: (key: string) => local[key] ?? null },
+    addEventListener: (name: string) => listeners.add(name),
+    removeEventListener: (name: string) => listeners.delete(name),
+  };
+}
+
+async function main() {
+  /* ── The database ───────────────────────────────────────────────────────── */
+
+  await check("a new database gets the schema once, in WAL mode", () => {
+    const db = tempDb("schema");
+    assert.equal(db.pragma("user_version", { simple: true }), 1);
+    assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
+    assert.deepEqual(tables, [{ name: "kv" }, { name: "meta" }]);
+    db.close();
+    // Reopening an existing file keeps it as it is.
+    const again = tempDb("schema");
+    assert.equal(again.pragma("user_version", { simple: true }), 1);
+    again.close();
+  });
+
+  await check("values round-trip exactly; null removes a key", () => {
+    const db = tempDb("roundtrip");
+    const json = JSON.stringify({ text: "Αθήνα → London", n: 1 });
+    setValue(FILTERS_KEY, json, db);
+    assert.equal(getValues(db)[FILTERS_KEY], json);
+    assert.equal(getValues(db)[SEARCHES_KEY], null);
+    setValue(FILTERS_KEY, "[]", db);
+    assert.equal(getValues(db)[FILTERS_KEY], "[]");
+    setValue(FILTERS_KEY, null, db);
+    assert.equal(getValues(db)[FILTERS_KEY], null);
+    db.close();
+  });
+
+  await check("the import runs once, only into an empty database", () => {
+    const db = tempDb("import");
+    assert.equal(isImported(db), false);
+    assert.equal(importOnce({ [SEARCHES_KEY]: "[1]", [PREFS_KEY]: "{}" }, db), true);
+    assert.equal(isImported(db), true);
+    assert.equal(getValues(db)[SEARCHES_KEY], "[1]");
+    assert.equal(importOnce({ [SEARCHES_KEY]: "[2]" }, db), false);
+    assert.equal(getValues(db)[SEARCHES_KEY], "[1]");
+
+    const used = tempDb("import-used");
+    setValue(FILTERS_KEY, "{}", used);
+    assert.equal(importOnce({ [SEARCHES_KEY]: "[1]" }, used), false);
+    assert.equal(getValues(used)[SEARCHES_KEY], null);
+
+    // Nothing to import still marks it done, so it is never retried.
+    const empty = tempDb("import-empty");
+    assert.equal(importOnce({}, empty), true);
+    assert.equal(isImported(empty), true);
+    for (const d of [db, used, empty]) d.close();
+  });
+
+  /* ── The browser client ─────────────────────────────────────────────────── */
+
+  await check("before the data is loaded, reads are empty and writes refused", () => {
+    resetStorageClientForChecks(null);
+    assert.equal(getItem(SEARCHES_KEY), null);
+    assert.equal(setItem(SEARCHES_KEY, "[]"), false);
+    assert.deepEqual(loadSearches(), []);
+    assert.equal(loadFilters().type, "round-trip");
+  });
+
+  await check("a write over the size budget is refused, as localStorage refused it", () => {
+    resetStorageClientForChecks({});
+    fakeServer();
+    assert.equal(setItem(SEARCHES_KEY, "x".repeat(STORAGE_MAX_VALUE_CHARS + 1)), false);
+    assert.equal(getItem(SEARCHES_KEY), null);
+  });
+
+  await check("writes update reads at once, collapse per key, and reach the server", async () => {
+    resetStorageClientForChecks({});
+    fakeWindow();
+    const server = fakeServer();
+    assert.equal(setItem(FILTERS_KEY, '{"a":1}'), true);
+    assert.equal(setItem(FILTERS_KEY, '{"a":2}'), true);
+    assert.equal(setItem(FILTERS_KEY, '{"a":3}'), true);
+    assert.equal(getItem(FILTERS_KEY), '{"a":3}');
+    assert.equal(listeners.has("beforeunload"), true, "leaving asks while a write is pending");
+    assert.equal(await flushStorage(), true);
+    assert.equal(server.values[FILTERS_KEY], '{"a":3}');
+    // The first write was already in flight; the two after it became one.
+    assert.deepEqual(server.puts.map((p) => p.value), ['{"a":1}', '{"a":3}']);
+    assert.equal(listeners.has("beforeunload"), false);
+  });
+
+  await check("a failed write is retried until it lands", async () => {
+    resetStorageClientForChecks({});
+    fakeWindow();
+    const server = fakeServer({ failPuts: 1 });
+    setItem(PREFS_KEY, '{"p":1}');
+    assert.equal(await flushStorage(5_000), true);
+    assert.equal(server.values[PREFS_KEY], '{"p":1}');
+  });
+
+  await check("the first load imports the old localStorage values, once", async () => {
+    resetStorageClientForChecks(null);
+    fakeWindow({ [SEARCHES_KEY]: "[]", [FILTERS_KEY]: '{"old":true}' });
+    const server = fakeServer({ imported: false });
+    await storageReady();
+    assert.equal(storageError(), false);
+    assert.equal(getItem(FILTERS_KEY), '{"old":true}');
+    assert.equal(server.values[FILTERS_KEY], '{"old":true}');
+    assert.equal(server.imported, true);
+  });
+
+  await check("an unreachable server shows defaults and refuses writes", async () => {
+    resetStorageClientForChecks(null);
+    fakeWindow();
+    fakeServer({ down: true });
+    await storageReady();
+    assert.equal(storageError(), true);
+    assert.deepEqual(loadSearches(), []);
+    assert.equal(setItem(SEARCHES_KEY, "[]"), false);
+  });
+
+  resetStorageClientForChecks(null);
+  delete (globalThis as { window?: unknown }).window;
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log(`\n${passed} checks passed.`);
+}
+
+void main().catch((error) => {
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.error(error);
+  process.exit(1);
+});

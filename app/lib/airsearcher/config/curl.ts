@@ -29,8 +29,12 @@ export const CURL_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000;
 /** How long one request may take before curl gives up. */
 export const CURL_TIMEOUT_MS = 30_000;
 
-/** Most cURLs one run accepts — a guard against pasting a whole HAR file. */
-export const CURL_MAX_PER_RUN = 20;
+/**
+ * Most requests one run may send — pasted cURLs, or searches built from one
+ * session cURL (each search is two: first page and view more). A guard against
+ * a wide date range quietly turning into a flood of requests.
+ */
+export const CURL_MAX_PER_RUN = 45;
 
 /** Largest response body accepted from curl. */
 export const CURL_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;

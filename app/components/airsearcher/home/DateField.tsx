@@ -89,9 +89,13 @@ export default function DateField({
         <Text size="very small" value="Dates" className="text-gray-500" />
         <Button
           styleType="underline"
-          onClick={() => onChange({ dateMode: advanced ? "exact" : "advanced" })}
+          onClick={() => {
+            onChange({ dateMode: advanced ? "exact" : "advanced" });
+            // Switching to a range opens its calendar straight away.
+            if (!advanced) onOpenCalendar();
+          }}
         >
-          <Text size="very small" value={advanced ? "Use exact dates" : "Advanced search"} />
+          <Text size="very small" value={advanced ? "Select exact dates" : "Select date range"} />
         </Button>
       </div>
 

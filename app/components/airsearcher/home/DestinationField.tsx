@@ -1,6 +1,5 @@
 "use client";
 
-import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { useAbsoluteModal } from "@/framework/ui/context/AppContext";
 import { colorMain } from "@/config/theme";
@@ -71,12 +70,10 @@ export default function DestinationField({
         placeholder={placeholder}
       />
 
+      {/* The airports themselves are listed and ticked below the map. */}
       {city && (
-        <div {...airportPanel.triggerProps} className="flex items-center gap-2 self-start">
+        <div {...airportPanel.triggerProps} className="self-start">
           <Text size="very small" value={summary} className={colorMain.text} />
-          <Button styleType="underline" onClick={() => openAirportPanel(city.id)}>
-            <Text size="very small" value="Edit airports" />
-          </Button>
         </div>
       )}
     </div>

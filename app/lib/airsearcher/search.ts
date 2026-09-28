@@ -24,12 +24,17 @@ import {
 } from "@/lib/airsearcher/queryPlan";
 import { costOf } from "@/lib/airsearcher/quota";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
-import { findFreshByKey, saveSearch, type StoredSearch } from "@/lib/airsearcher/storage";
+import {
+  findFreshByKey,
+  saveSearch,
+  type CurlRequestCount,
+  type StoredSearch,
+} from "@/lib/airsearcher/storage";
 import { poolFromRecords } from "@/lib/airsearcher/serpApi";
 import { poolKey } from "@/lib/airsearcher/grouping";
 import { cheapestPerPair, type StoredPriceGrid } from "@/lib/airsearcher/priceGrid";
 import { cityById } from "@/data/places";
-import { destinationsOf, withLegacyDestination } from "@/lib/airsearcher/types";
+import { mergedDestinations, withLegacyDestination } from "@/lib/airsearcher/types";
 import type {
   Arrangement,
   FlightRecord,
@@ -80,7 +85,7 @@ export function previewCost(query: SearchQuery, allow?: RoutingAllowance): {
 
 /** A short human label for the history card, e.g. "London · 14 Sep 2026". */
 function labelFor(query: SearchQuery): string {
-  const places = destinationsOf(query);
+  const places = mergedDestinations(query);
   const names = places.map((place) => cityById(place.cityId)?.name ?? place.cityId);
   const where =
     names.length <= 2 ? names.join(" + ") : `${names[0]} +${names.length - 1} more`;
@@ -112,7 +117,7 @@ function rankEveryArrangement(
 ): Arrangement[] {
   const arrangements: Arrangement[] = [];
 
-  for (const place of destinationsOf(query)) {
+  for (const place of mergedDestinations(query)) {
     for (const airport of place.airports) {
       for (const departureDate of candidateDates(query)) {
         // An open trip length tries every return date; ranking picks the best.
@@ -409,6 +414,7 @@ export function runCurlSearch(
   preferences: RankingPreferences,
   records: FlightRecord[],
   warnings: string[],
+  requests?: CurlRequestCount[],
 ): StoredSearch {
   const built = buildSearchResult(
     query,
@@ -429,6 +435,8 @@ export function runCurlSearch(
       priceGrid: built.priceGrid,
       records,
       warnings,
+      requests,
+      uniqueFlights: records.reduce((sum, record) => sum + record.flights.length, 0),
     },
   };
 

@@ -7,7 +7,7 @@ import { describeTripLength } from "@/lib/airsearcher/queryPlan";
 import { formatAge, formatDate } from "@/lib/airsearcher/time";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import { cityName } from "@/data/places";
-import { destinationsOf } from "@/lib/airsearcher/types";
+import { mergedDestinations } from "@/lib/airsearcher/types";
 
 /**
  * What was searched, how much of it survives the filters, and — when the stored
@@ -28,7 +28,7 @@ export default function ResultsHeader({
   stale: boolean;
 }) {
   const { query } = entry;
-  const destinations = destinationsOf(query);
+  const destinations = mergedDestinations(query);
 
   const dates =
     query.dateMode === "exact"

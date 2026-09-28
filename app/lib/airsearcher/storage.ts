@@ -1,10 +1,14 @@
 /**
- * The only module that touches localStorage.
+ * The only module that reads and writes the app's saved data.
  *
- * Everything here is defensive: storage can be absent (server render), blocked
- * (private mode), full, or hold a blob written by an older version of this
- * code. None of those may break the page, so every path degrades to "no saved
- * data" rather than throwing.
+ * The data lives in a local SQLite file (see `storageClient.ts`), under the
+ * same keys and in the same JSON the app kept in localStorage before, so
+ * everything below reads it exactly as it always has.
+ *
+ * Everything here is defensive: storage can be absent (server render, or not
+ * loaded yet), unreachable, full, or hold a blob written by an older version of
+ * this code. None of those may break the page, so every path degrades to "no
+ * saved data" rather than throwing.
  */
 
 import {
@@ -21,6 +25,13 @@ import {
   DEFAULT_FILTERS,
   type FilterState,
 } from "@/lib/airsearcher/config/filters";
+import {
+  FILTERS_KEY,
+  PREFS_KEY,
+  SEARCHES_KEY,
+  type StorageKey,
+} from "@/lib/airsearcher/db/keys";
+import { getItem, setItem } from "@/lib/airsearcher/storageClient";
 import { destinationsOf } from "@/lib/airsearcher/types";
 import type {
   Arrangement,
@@ -31,10 +42,6 @@ import type {
   SearchQuery,
 } from "@/lib/airsearcher/types";
 import type { StoredPriceGrid } from "@/lib/airsearcher/priceGrid";
-
-const SEARCHES_KEY = "airsearcher:searches:v1";
-const FILTERS_KEY = "airsearcher:filters:v1";
-const PREFS_KEY = "airsearcher:prefs:v1";
 
 export interface StoredSearch {
   id: string;
@@ -86,7 +93,22 @@ export interface StoredSearch {
     records?: FlightRecord[];
     /** Rows with no flights, flights that matched no route, and similar. */
     warnings?: string[];
+    /**
+     * How many flights each request returned, in the order sent, and how many
+     * distinct flights the routes kept once duplicates were merged. Absent on
+     * entries saved before it was recorded.
+     */
+    requests?: CurlRequestCount[];
+    uniqueFlights?: number;
   };
+}
+
+/** One request of a cURL run: what it was and how many flights it read. */
+export interface CurlRequestCount {
+  label: string;
+  flights: number;
+  /** Set when the request failed; `flights` is then 0. */
+  error?: string;
 }
 
 /** Ranking preferences plus the calendar's date rules, stored together. */
@@ -105,22 +127,10 @@ export const DEFAULT_PREFERENCES: StoredPreferences = {
 
 /* ── Storage access ──────────────────────────────────────────────────────── */
 
-function getStorage(): Storage | null {
+function readJson(key: StorageKey): unknown {
+  const raw = getItem(key);
+  if (!raw) return null;
   try {
-    if (typeof window === "undefined" || !window.localStorage) return null;
-    return window.localStorage;
-  } catch {
-    // Accessing localStorage throws outright in some blocked configurations.
-    return null;
-  }
-}
-
-function readJson(key: string): unknown {
-  const storage = getStorage();
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (!raw) return null;
     return JSON.parse(raw) as unknown;
   } catch {
     return null;
@@ -128,16 +138,15 @@ function readJson(key: string): unknown {
 }
 
 /** Returns false when the write did not happen, so callers can shed weight. */
-function writeJson(key: string, value: unknown): boolean {
-  const storage = getStorage();
-  if (!storage) return false;
+function writeJson(key: StorageKey, value: unknown): boolean {
+  let text: string;
   try {
-    storage.setItem(key, JSON.stringify(value));
-    return true;
+    text = JSON.stringify(value);
   } catch {
-    // Quota exceeded or storage blocked.
     return false;
   }
+  // Refused when over the size budget or when storage is unavailable.
+  return setItem(key, text);
 }
 
 /* ── Searches ────────────────────────────────────────────────────────────── */

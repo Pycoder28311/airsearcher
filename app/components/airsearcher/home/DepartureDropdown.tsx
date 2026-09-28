@@ -32,11 +32,12 @@ export default function DepartureDropdown({
 
   const active = origins.filter((o) => o.passengers > 0);
   const passengers = active.reduce((sum, o) => sum + o.passengers, 0);
+  // The passenger count only shows while the editor is open.
   const summary =
     active.length === 0
       ? "Add departure airports"
-      : `${active.map((o) => o.airport).join(", ")} · ${passengers} passenger${
-          passengers === 1 ? "" : "s"
+      : `${active.map((o) => o.airport).join(", ")}${
+          modal.isOpen ? ` · ${passengers} passenger${passengers === 1 ? "" : "s"}` : ""
         }`;
 
   const panel = (
