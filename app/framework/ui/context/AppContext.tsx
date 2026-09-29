@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import type { User } from "@/framework/types";
 import fieldConfig from "@/config/fieldConfig";
+import { LOAD_PRISMA_FIELDS, LOAD_SESSION } from "@/config/appConfig";
 import { useFixedModalState } from "./FixedModal";
 import {
   useAbsoluteModalState,
@@ -139,10 +140,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    fetch("/api/session")
-      .then((res) => res.json())
-      .then((data) => setUser(data?.user ?? null))
-      .catch(() => setUser(null));
+    if (LOAD_SESSION) {
+      fetch("/api/session")
+        .then((res) => res.json())
+        .then((data) => setUser(data?.user ?? null))
+        .catch(() => setUser(null));
+    }
+    if (!LOAD_PRISMA_FIELDS) return;
     fetch("/api/prisma-fields")
       .then((res) => res.json())
       .then((data: Record<string, any[]>) => {

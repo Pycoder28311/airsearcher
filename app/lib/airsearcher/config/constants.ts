@@ -66,17 +66,6 @@ export const MIN_GATHER_BUFFER_MINUTES = 90;
 export const DATE_PRIORITY_BONUS = 0.02;
 
 /**
- * Share of the score given to flying without stops, before price and hours
- * split the rest. A stop counts the same whether Google sold it inside one
- * ticket or the combination joined two tickets at the hub.
- *
- * Big on purpose, and judged against the other results like price is: the
- * result with the fewest stops, even at the worst price and hours in the set,
- * still outranks the one with the most stops at the best price and hours.
- */
-export const STOP_WEIGHT = 0.6;
-
-/**
  * How good one journey (one direction of one group) is for its stop count:
  * index 0 is non-stop, 1 one stop, and anything beyond the list scores 0.
  */
@@ -90,6 +79,13 @@ export const MIN_FLOAT_HEIGHT = 240;
 export const DEFAULT_FLOAT_WIDTH = 460;
 export const DEFAULT_FLOAT_HEIGHT = 420;
 export const FLOAT_CASCADE_OFFSET = 28;
+
+/**
+ * How many result cards are drawn at first, and how many more each time the
+ * list is scrolled to its end. Drawing hundreds at once made the results page
+ * slow to open and to re-sort.
+ */
+export const RESULTS_BATCH_SIZE = 30;
 
 /** Currency the mock data quotes prices in. */
 export const CURRENCY = "EUR";

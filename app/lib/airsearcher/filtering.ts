@@ -85,18 +85,24 @@ export function stopBucket(stops: number): StopOption {
 }
 
 /**
- * Every in-scope journey must fall in one of the selected buckets, counting a
- * change between tickets as a stop just like one inside a ticket.
+ * A result's stops: the most any group makes on one in-scope journey, counting
+ * a change between tickets as a stop just like one inside a ticket. Everyone
+ * travels together, so the result is as many stops as its longest way there
+ * or back — which also gives every result exactly one stops bucket.
  */
+export function stopsOf(sets: LegFlightSet[], scope: FilterScope = "both"): number {
+  const counts = sets.flatMap((set) => journeysInScope(set, scope).map(journeyStopCount));
+  return counts.length > 0 ? Math.max(...counts) : 0;
+}
+
+/** Whether a result's stops (see `stopsOf`) fall in one of the selected buckets. */
 export function matchesStops(
-  set: LegFlightSet,
+  sets: LegFlightSet[],
   selected: StopOption[],
   scope: FilterScope = "both",
 ): boolean {
   if (selected.length === 0) return true;
-  return journeysInScope(set, scope).every((flights) =>
-    selected.includes(stopBucket(journeyStopCount(flights))),
-  );
+  return selected.includes(stopBucket(stopsOf(sets, scope)));
 }
 
 /**
@@ -270,11 +276,8 @@ function flightSetPasses(
 ): boolean {
   const s = filters.scopes;
 
-  // Price and airlines are deliberately absent: both are judged once across the
-  // whole arrangement in `arrangementPasses`, never per group.
-  if (skip !== "stops" && !matchesStops(set, filters.stops, s.stops)) {
-    return false;
-  }
+  // Stops, price and airlines are deliberately absent: they are judged once
+  // across the whole arrangement in `arrangementPasses`, never per group.
   if (skip !== "times") {
     const going = s.times !== "returning";
     const returning = s.times !== "going";
@@ -334,10 +337,11 @@ function flightSetPasses(
 
 /**
  * An arrangement survives only when every origin group's flights survive.
- * Price and airlines are the exceptions: they are judged on the whole
- * arrangement. The price range must hold every group's per-passenger price —
- * from the cheapest group to the priciest — and an airline choice means one
- * airline for everyone.
+ * Stops, price and airlines are the exceptions: they are judged on the whole
+ * arrangement. Stops go by the group with the most (see `stopsOf`); the price
+ * range must hold every group's per-passenger price — from the cheapest group
+ * to the priciest, counting the flights the price scope points at — and an
+ * airline choice means one airline for everyone.
  */
 function arrangementPasses(
   arrangement: Arrangement,
@@ -346,11 +350,14 @@ function arrangementPasses(
 ): boolean {
   if (skip !== "price" && filters.priceRange !== null) {
     const [min, max] = filters.priceRange;
-    const range = groupPriceRange(arrangement);
+    const range = groupPriceRange(arrangement, filters.scopes.price);
     if (range.min < min || range.max > max) return false;
   }
 
   const sets = flightSetsOf(arrangement);
+  if (skip !== "stops" && !matchesStops(sets, filters.stops, filters.scopes.stops)) {
+    return false;
+  }
   if (
     skip !== "airlines" &&
     !matchesAirlines(sets, filters.airlineMode, filters.airlines, filters.scopes.airlines)
@@ -385,7 +392,7 @@ export function countsFor(
   const withoutStops = arrangements.filter((a) => arrangementPasses(a, filters, "stops"));
   for (const bucket of ["non-stop", "1", "2", "3+"] as StopOption[]) {
     counts[`stops:${bucket}`] = withoutStops.filter((a) =>
-      flightSetsOf(a).every((it) => matchesStops(it, [bucket], filters.scopes.stops)),
+      matchesStops(flightSetsOf(a), [bucket], filters.scopes.stops),
     ).length;
   }
 

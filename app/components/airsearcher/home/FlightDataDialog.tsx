@@ -1,12 +1,13 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Text from "@/framework/ui/iconText/Text";
 import { uniqueFlights } from "@/lib/airsearcher/grouping";
 import { grayLight, grayMid, radius } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { formatClock, formatDate, formatDuration } from "@/lib/airsearcher/time";
 import { stopAirportsOf, type FlightRecord, type NormalizedFlight } from "@/lib/airsearcher/types";
-import type { StoredSearch } from "@/lib/airsearcher/storage";
+import { loadGatheredFlights, type StoredSearch } from "@/lib/airsearcher/storage";
 import Dialog from "../common/Dialog";
 
 const REASON_LABELS: Record<FlightRecord["reason"], string> = {
@@ -109,7 +110,8 @@ function RecordBlock({ record }: { record: FlightRecord }) {
  * Every flight this search gathered, grouped by the request that returned it.
  *
  * Deliberately plain: this is the raw data view, not a designed result. It
- * exists so nothing that was paid for is invisible.
+ * exists so nothing that was paid for is invisible. The flights are loaded
+ * when it opens, not with the rest of the saved data: they are most of it.
  */
 export default function FlightDataDialog({
   entry,
@@ -120,8 +122,23 @@ export default function FlightDataDialog({
   open: boolean;
   onClose: () => void;
 }) {
+  /** Null while loading. */
+  const [source, setSource] = useState<FlightRecord[] | null>(null);
+
+  /* Fetching the flights from the local database is the "external system"
+     this effect is for; the card remounts the dialog each time it opens. */
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void loadGatheredFlights(entry).then((loaded) => {
+      if (!cancelled) setSource(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, entry]);
+
   // Searches saved before duplicates were removed can still hold them.
-  const source = entry.kind === "google-curl" ? entry.googleCurl?.records : entry.records;
   const records = (source ?? []).map((record) => ({
     ...record,
     flights: uniqueFlights(record.flights),
@@ -133,12 +150,18 @@ export default function FlightDataDialog({
       open={open}
       onClose={onClose}
       title="Gathered flight data"
-      subtitle={`${entry.label} · ${records.length} request${
-        records.length === 1 ? "" : "s"
-      } · ${totalFlights} flight${totalFlights === 1 ? "" : "s"}`}
+      subtitle={
+        source === null
+          ? entry.label
+          : `${entry.label} · ${records.length} request${
+              records.length === 1 ? "" : "s"
+            } · ${totalFlights} flight${totalFlights === 1 ? "" : "s"}`
+      }
       width="max-w-6xl"
     >
-      {records.length === 0 ? (
+      {source === null ? (
+        <Text size="small" value="Loading the flights…" className="text-gray-400" />
+      ) : records.length === 0 ? (
         <Text
           size="small"
           value="No raw data was kept for this search. Either it was saved before raw data was stored, or the browser had no room for it and kept the results only."

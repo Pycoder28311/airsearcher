@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
@@ -12,14 +12,15 @@ import CurlRequestSummary from "@/components/airsearcher/results/CurlRequestSumm
 import DateRangeView from "@/components/airsearcher/results/DateRangeView";
 import { describePair } from "@/components/airsearcher/results/PriceGrid";
 import FloatingLayer from "@/components/airsearcher/results/FloatingLayer";
-import ResultCard from "@/components/airsearcher/results/ResultCard";
+import ResultList from "@/components/airsearcher/results/ResultList";
 import ResultsHeader from "@/components/airsearcher/results/ResultsHeader";
 import SortByDropdown from "@/components/airsearcher/results/SortByDropdown";
 import { useFloatingWindows } from "@/components/airsearcher/results/useFloatingWindows";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
-import { resetFilters, type FilterState } from "@/lib/airsearcher/config/filters";
+import { anyGroupChanged, resetFilters, type FilterState } from "@/lib/airsearcher/config/filters";
 import type { ArrangementSortMode } from "@/lib/airsearcher/grouping";
 import {
+  asOneWay,
   everyoneGetsHome,
   formatPriceRange,
   groupPriceRange,
@@ -100,6 +101,16 @@ function ResultsView() {
   const [preferences, setPreferences] = useState<StoredPreferences | null>(null);
   const [sortMode, setSortMode] = useState<ArrangementSortMode>("score");
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const toggleOpen = useCallback(
+    (id: string) =>
+      setOpenIds((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    [setOpenIds],
+  );
   // The per-request flight counts and "no price" notes stay hidden until asked for.
   const [showInfo, setShowInfo] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -155,13 +166,17 @@ function ResultsView() {
   const sources = entry ? sourcesOf(entry) : [];
   const activeSource = entry ? activeSourceOf(entry, source) : source;
 
+  // "One way" in the sidebar shows a round-trip search's results without the way back.
+  const oneWay = entry?.query.tripType === "round-trip" && filters?.type === "one-way";
+
   // The only thing the tab changes: which API's arrangements feed the pipeline.
   const arrangements = useMemo(() => {
     if (!entry) return [];
     // Searches saved before duplicates were removed can still hold them, and
     // older ones results where a group had no way home.
-    return uniqueArrangements(arrangementsFor(entry, activeSource).filter(everyoneGetsHome));
-  }, [entry, activeSource]);
+    const stored = uniqueArrangements(arrangementsFor(entry, activeSource).filter(everyoneGetsHome));
+    return oneWay ? asOneWay(stored) : stored;
+  }, [entry, activeSource, oneWay]);
 
   /**
    * The whole results pipeline: filter, re-score against the surviving set,
@@ -204,6 +219,8 @@ function ResultsView() {
     : null;
 
   const updateFilters = (next: FilterState) => {
+    // A departure–return pair means nothing once the way back is dropped.
+    if (next.type !== filters?.type) setSelectedPair(null);
     setFilters(next);
     saveFilters(next);
   };
@@ -271,7 +288,7 @@ function ResultsView() {
         preferences={preferences}
         onPreferencesChange={updatePreferences}
         arrangements={arrangements}
-        query={entry.query}
+        roundTripSearch={entry.query.tripType === "round-trip"}
       />
 
       <section className="flex min-w-0 flex-1 flex-col gap-4">
@@ -314,25 +331,13 @@ function ResultsView() {
               </Button>
             </div>
 
-            {showInfo &&
-              (entry.googleCurl?.requests ? (
-                <CurlRequestSummary
-                  requests={entry.googleCurl.requests}
-                  uniqueFlights={entry.googleCurl.uniqueFlights}
-                />
-              ) : (
-                <Text
-                  size="very small"
-                  icon="info"
-                  value="This search was saved before the flights read per Google request were recorded. Run it again to see them."
-                  className="text-gray-500"
-                />
-              ))}
-
-            {showInfo &&
-              entry.googleCurl?.warnings?.map((warning) => (
-                <Text key={warning} size="very small" icon="info" value={warning} className="text-gray-500" />
-              ))}
+            {showInfo && (
+              <CurlRequestSummary
+                requests={entry.googleCurl?.requests}
+                uniqueFlights={entry.googleCurl?.uniqueFlights}
+                warnings={entry.googleCurl?.warnings}
+              />
+            )}
           </div>
         )}
 
@@ -353,7 +358,8 @@ function ResultsView() {
 
         {rangeSearch && (
           <DateRangeView
-            query={entry.query}
+            // Seen one way, there are no return dates to lay out a grid by.
+            query={oneWay ? { ...entry.query, tripType: "one-way", returnDate: null } : entry.query}
             arrangements={visible}
             stored={arrangements}
             floor={priceGridFor(entry, activeSource)}
@@ -366,6 +372,11 @@ function ResultsView() {
           className={`flex flex-wrap items-center gap-2 border-y ${grayMid.border} py-2`}
         >
           <SidebarToggle open={sidebarOpen} onToggle={toggleSidebar} filters={filters} />
+          {anyGroupChanged(filters) && (
+            <Button styleType="tertiary" onClick={() => updateFilters(resetFilters(filters))}>
+              <Text icon="reset" size="small" value="Reset filters" />
+            </Button>
+          )}
           {selectedPair && (
             <Button
               styleType="tertiary"
@@ -418,29 +429,16 @@ function ResultsView() {
             </Button>
           </div>
         ) : (
-          <div className="flex flex-col gap-4">
-            {selectedOnly.map((arrangement) => (
-              <ResultCard
-                key={arrangement.id}
-                arrangement={arrangement}
-                cheapestPrice={cheapestPrice ?? arrangement.totals.totalPrice}
-                compareWith={selectedOnly}
-                open={openIds.has(arrangement.id)}
-                floating={floating.isFloating(arrangement.id)}
-                showDateHeader={rangeSearch}
-                onToggle={() =>
-                  setOpenIds((current) => {
-                    const next = new Set(current);
-                    if (next.has(arrangement.id)) next.delete(arrangement.id);
-                    else next.add(arrangement.id);
-                    return next;
-                  })
-                }
-                onFloat={() => floating.open(arrangement.id)}
-                onUnfloat={() => floating.close(arrangement.id)}
-              />
-            ))}
-          </div>
+          <ResultList
+            arrangements={selectedOnly}
+            cheapestPrice={cheapestPrice}
+            openIds={openIds}
+            isFloating={floating.isFloating}
+            showDateHeader={rangeSearch}
+            onToggle={toggleOpen}
+            onFloat={floating.open}
+            onUnfloat={floating.close}
+          />
         )}
       </section>
 

@@ -11,7 +11,18 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { STORAGE_DEFAULT_DB_PATH } from "@/lib/airsearcher/config/storage";
-import { STORAGE_KEYS, type StorageKey, type StorageValues } from "@/lib/airsearcher/db/keys";
+import {
+  isRecordsKey,
+  recordsKeyOf,
+  SEARCHES_KEY,
+  STORAGE_KEYS,
+  type AnyStorageKey,
+  type RecordsKey,
+  type StorageKey,
+  type StorageValues,
+} from "@/lib/airsearcher/db/keys";
+import { splitRecords } from "@/lib/airsearcher/db/records";
+import type { StoredSearch } from "@/lib/airsearcher/storage";
 
 if (typeof window !== "undefined") {
   throw new Error("sqlite.ts is server-only.");
@@ -57,7 +68,12 @@ export function openDb(file: string): Db {
 const globalDb = globalThis as typeof globalThis & { __airsearcherDb?: Db };
 
 function db(): Db {
-  return (globalDb.__airsearcherDb ??= openDb(dbPath()));
+  if (!globalDb.__airsearcherDb) {
+    const database = openDb(dbPath());
+    separateRecords(database);
+    globalDb.__airsearcherDb = database;
+  }
+  return globalDb.__airsearcherDb;
 }
 
 /* ── Operations — each takes the database, so the checks can use a temp one ── */
@@ -68,8 +84,16 @@ export function getValues(database: Db = db()): StorageValues {
   return Object.fromEntries(STORAGE_KEYS.map((key) => [key, found.get(key) ?? null])) as StorageValues;
 }
 
+/** One search's records (see `records.ts`), or null when none are saved. */
+export function getValue(key: RecordsKey, database: Db = db()): string | null {
+  const row = database.prepare("SELECT value FROM kv WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
 /** Saves a value, or removes the key when `value` is null. */
-export function setValue(key: StorageKey, value: string | null, database: Db = db()): void {
+export function setValue(key: AnyStorageKey, value: string | null, database: Db = db()): void {
   if (value === null) {
     database.prepare("DELETE FROM kv WHERE key = ?").run(key);
     return;
@@ -104,6 +128,48 @@ export function importOnce(values: Partial<Record<StorageKey, string>>, database
       .prepare("INSERT INTO meta (name, value) VALUES ('imported', ?)")
       .run(new Date().toISOString());
     return true;
+  });
+  return run();
+}
+
+/**
+ * Moves the gathered flights of searches saved before they had keys of their
+ * own out of the searches list, once, in one transaction. The list shrinks
+ * from tens of MB to a few, so every page loads without them. Returns how many
+ * searches were split; the move is recorded, so it never runs twice.
+ */
+export function separateRecords(database: Db): number {
+  const run = database.transaction(() => {
+    if (database.prepare("SELECT 1 FROM meta WHERE name = 'records-separated'").get()) return 0;
+
+    const row = database.prepare("SELECT value FROM kv WHERE key = ?").get(SEARCHES_KEY) as
+      | { value: string }
+      | undefined;
+    let list: unknown = null;
+    try {
+      list = row ? (JSON.parse(row.value) as unknown) : null;
+    } catch {
+      // Unreadable: left exactly as it is, and the move marked done.
+    }
+
+    let moved = 0;
+    if (Array.isArray(list)) {
+      const next = list.map((item: unknown) => {
+        const entry = item as StoredSearch;
+        if (typeof entry?.id !== "string" || !isRecordsKey(recordsKeyOf(entry.id))) return item;
+        const split = splitRecords(entry);
+        if (!split.records) return item;
+        setValue(recordsKeyOf(entry.id), JSON.stringify(split.records), database);
+        moved++;
+        return split.entry;
+      });
+      if (moved > 0) setValue(SEARCHES_KEY, JSON.stringify(next), database);
+    }
+
+    database
+      .prepare("INSERT INTO meta (name, value) VALUES ('records-separated', ?)")
+      .run(new Date().toISOString());
+    return moved;
   });
   return run();
 }

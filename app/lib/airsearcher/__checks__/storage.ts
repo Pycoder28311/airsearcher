@@ -12,9 +12,26 @@ import os from "node:os";
 import path from "node:path";
 
 import { STORAGE_MAX_VALUE_CHARS } from "@/lib/airsearcher/config/storage";
-import { FILTERS_KEY, PREFS_KEY, SEARCHES_KEY } from "@/lib/airsearcher/db/keys";
-import { getValues, importOnce, isImported, openDb, setValue } from "@/lib/airsearcher/db/sqlite";
-import { loadFilters, loadSearches, pruneOutdatedResults } from "@/lib/airsearcher/storage";
+import { FILTERS_KEY, PREFS_KEY, recordsKeyOf, SEARCHES_KEY } from "@/lib/airsearcher/db/keys";
+import {
+  getValue,
+  getValues,
+  importOnce,
+  isImported,
+  openDb,
+  separateRecords,
+  setValue,
+} from "@/lib/airsearcher/db/sqlite";
+import {
+  gatheredFlightsOf,
+  loadFilters,
+  loadGatheredFlights,
+  loadSearches,
+  pruneOutdatedResults,
+  removeSearch,
+  saveSearch,
+  type StoredSearch,
+} from "@/lib/airsearcher/storage";
 import { asCurlError, CurlError } from "@/lib/airsearcher/curl/errors";
 import {
   flushStorage,
@@ -60,10 +77,12 @@ function fakeServer(initial: Partial<FakeServer> = {}): FakeServer {
     down: false,
     ...initial,
   };
-  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
     if (server.down) throw new TypeError("fetch failed");
     const method = init?.method ?? "GET";
     const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    const key = new URL(url, "http://localhost").searchParams.get("key");
+    if (method === "GET" && key !== null) return json({ value: server.values[key] ?? null });
     if (method === "GET") return json({ values: server.values, imported: server.imported });
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     if (method === "POST") {
@@ -231,6 +250,66 @@ async function main() {
     assert.equal(b.googleCurl?.requests?.length, 1);
     assert.equal(await flushStorage(), true);
     assert.ok(server.values[SEARCHES_KEY]!.includes('"resultsRemoved":true'));
+  });
+
+  /* ── Gathered flights, kept apart ───────────────────────────────────────── */
+
+  const flights = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `f${i}` }));
+  const searchWith = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    savedAt: new Date().toISOString(),
+    label: id,
+    key: id,
+    query: { destinations: [{ cityId: "uk-london", airports: ["LHR"] }], origins: [] },
+    arrangements: [],
+    ...extra,
+  });
+
+  await check("searches saved with their flights inside get them moved out, once", () => {
+    const db = tempDb("separate");
+    const curl = searchWith("s-curl", {
+      kind: "google-curl",
+      googleCurl: { arrangements: [], records: [{ id: "r1", flights: flights(3) }], requests: [] },
+    });
+    const plain = searchWith("s-plain");
+    setValue(SEARCHES_KEY, JSON.stringify([curl, plain]), db);
+
+    assert.equal(separateRecords(db), 1);
+    const [movedCurl, movedPlain] = JSON.parse(getValues(db)[SEARCHES_KEY]!) as StoredSearch[];
+    assert.equal(movedCurl.googleCurl?.records, undefined);
+    assert.equal(movedCurl.gatheredFlights, 3);
+    assert.deepEqual(movedCurl.googleCurl?.requests, [], "the rest of the search stays");
+    assert.deepEqual(movedPlain, plain, "a search without flights is untouched");
+    const stored = JSON.parse(getValue(recordsKeyOf("s-curl"), db)!);
+    assert.equal(stored.googleCurl[0].flights.length, 3);
+    assert.equal(getValue(recordsKeyOf("s-plain"), db), null);
+    assert.equal(
+      Object.keys(getValues(db)).some((key) => key.startsWith("airsearcher:records")),
+      false,
+      "the plain read never includes them",
+    );
+    assert.equal(separateRecords(db), 0, "never runs twice");
+    db.close();
+  });
+
+  await check("a saved search keeps only the count; its flights load on demand", async () => {
+    resetStorageClientForChecks({});
+    fakeWindow();
+    const server = fakeServer();
+    saveSearch(
+      searchWith("s-new", { records: [{ id: "r1", flights: flights(2) }, { id: "r2", flights: flights(1) }] }) as unknown as StoredSearch,
+    );
+    const [entry] = loadSearches();
+    assert.equal(entry.records, undefined);
+    assert.equal(gatheredFlightsOf(entry), 3);
+    assert.equal(await flushStorage(), true);
+    assert.ok(!server.values[SEARCHES_KEY]!.includes('"flights"'), "the list holds no flights");
+    const loaded = await loadGatheredFlights(entry);
+    assert.deepEqual(loaded.map((r) => r.flights.length), [2, 1]);
+
+    removeSearch("s-new");
+    assert.equal(await flushStorage(), true);
+    assert.equal(server.values[recordsKeyOf("s-new")], null, "removing a search deletes its flights");
   });
 
   await check("a CurlError from before a hot reload is still recognised by its code", () => {

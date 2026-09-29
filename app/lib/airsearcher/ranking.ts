@@ -128,7 +128,7 @@ export type SortMode = "score" | "price" | "hour" | "original";
  * as zero; if that leaves nothing, an even split is used so the ranking stays
  * meaningful instead of dividing by zero.
  */
-export function normalizeWeights(weights: RankingWeights): {
+export function normalizeWeights(weights: Pick<RankingWeights, "price" | "hour">): {
   price: number;
   hour: number;
 } {

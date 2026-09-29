@@ -16,7 +16,6 @@ import {
 import { formatDuration } from "@/lib/airsearcher/time";
 import DualRange from "../DualRange";
 import PriceHistogram from "../PriceHistogram";
-import WeightSelector from "../../common/WeightSelector";
 
 export interface GroupProps {
   filters: FilterState;
@@ -119,12 +118,6 @@ export function PriceGroup({
           <Text size="very small" value="Clear price range" />
         </Button>
       )}
-
-      <WeightSelector
-        label="How much does a cheap total matter?"
-        value={filters.priceWeight}
-        onChange={(priceWeight) => onChange({ ...filters, priceWeight })}
-      />
     </div>
   );
 }

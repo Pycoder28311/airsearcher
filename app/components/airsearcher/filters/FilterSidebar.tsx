@@ -1,12 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
-import { border, colorMain, grayMid, radiusBig } from "@/config/theme";
+import { border, colorMain, radiusBig } from "@/config/theme";
 import {
   countActiveFilters,
-  resetFilters,
+  groupChanged,
+  resetGroup,
+  type ResettableGroup,
   type FilterScope,
   type FilterState,
   type ScopableFilter,
@@ -17,8 +19,7 @@ import {
   countsFor,
 } from "@/lib/airsearcher/filtering";
 import type { StoredPreferences } from "@/lib/airsearcher/storage";
-import type { Arrangement, SearchQuery } from "@/lib/airsearcher/types";
-import AdvancedCalendarModal from "../calendar/AdvancedCalendarModal";
+import type { Arrangement } from "@/lib/airsearcher/types";
 import FilterGroup from "./FilterGroup";
 import ScopeDropdown from "./ScopeDropdown";
 import {
@@ -31,8 +32,9 @@ import {
   TripTypeGroup,
 } from "./groups/BasicGroups";
 import AvoidAirportsGroup from "./groups/AvoidAirportsGroup";
-import DepartureAirportsGroup from "./groups/DepartureAirportsGroup";
 import HourPreferencesGroup from "./groups/HourPreferencesGroup";
+import ScoreWeightsGroup from "./groups/ScoreWeightsGroup";
+import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
 import TimesGroup from "./groups/TimesGroup";
 import { pricePerHeadOf } from "@/lib/airsearcher/grouping";
 
@@ -54,7 +56,7 @@ export default function FilterSidebar({
   preferences,
   onPreferencesChange,
   arrangements,
-  query,
+  roundTripSearch,
 }: {
   open: boolean;
   onClose: () => void;
@@ -63,24 +65,24 @@ export default function FilterSidebar({
   preferences: StoredPreferences;
   onPreferencesChange: (next: StoredPreferences) => void;
   arrangements: Arrangement[];
-  query: SearchQuery;
+  /** Whether the search found ways back; a one-way search has nothing to switch between. */
+  roundTripSearch: boolean;
 }) {
-  const [calendarOpen, setCalendarOpen] = useState(false);
-
-  const isRoundTrip = filters.type === "round-trip";
+  // Return-only controls need a way back: a round-trip search, not shown one way.
+  const isRoundTrip = roundTripSearch && filters.type === "round-trip";
   const activeCount = countActiveFilters(filters);
 
   const counts = useMemo(() => countsFor(arrangements, filters), [arrangements, filters]);
   const airlines = useMemo(() => airlinesIn(arrangements), [arrangements]);
   const connections = useMemo(() => connectingAirportsIn(arrangements), [arrangements]);
+  const priceScope = filters.scopes.price;
   const prices = useMemo(
-    // Every group's per-passenger price, which is what the price range filters on.
-    () => arrangements.flatMap((a) => a.legs.map((leg) => Math.round(pricePerHeadOf(leg)))),
-    [arrangements],
-  );
-  const knownAirports = useMemo(
-    () => [...new Set(arrangements.flatMap((a) => a.legs.map((l) => l.origin)))],
-    [arrangements],
+    // Every group's per-passenger price over the scoped flights, which is what the price range filters on.
+    () =>
+      arrangements.flatMap((a) =>
+        a.legs.map((leg) => Math.round(pricePerHeadOf(leg, priceScope))),
+      ),
+    [arrangements, priceScope],
   );
 
   /** The scope dropdown, shown only when there is a return flight to scope to. */
@@ -89,10 +91,21 @@ export default function FilterSidebar({
       <ScopeDropdown
         value={filters.scopes[key]}
         onChange={(next: FilterScope) =>
-          onChange({ ...filters, scopes: { ...filters.scopes, [key]: next } })
+          onChange({
+            ...filters,
+            scopes: { ...filters.scopes, [key]: next },
+            // A price range set on other flights' prices would no longer fit.
+            ...(key === "price" && next !== filters.scopes.price ? { priceRange: null } : {}),
+          })
         }
       />
     ) : undefined;
+
+  /** A section's reset, offered only while it differs from its defaults. */
+  const reset = (group: ResettableGroup) =>
+    groupChanged(filters, group) ? () => onChange(resetGroup(filters, group)) : undefined;
+  const curvesChanged =
+    JSON.stringify(preferences.ranking.curves) !== JSON.stringify(DEFAULT_RANKING_CONFIG.curves);
 
   const groupProps = { filters, onChange, counts };
 
@@ -129,51 +142,38 @@ export default function FilterSidebar({
             className="mt-1 mb-1 text-gray-400"
           />
 
-          <FilterGroup title="Trip type" defaultOpen>
-            <TripTypeGroup {...groupProps} />
+          <FilterGroup title="What matters most" defaultOpen onReset={reset("weights")}>
+            <ScoreWeightsGroup filters={filters} onChange={onChange} />
           </FilterGroup>
 
-          <FilterGroup title="Departure airports">
-            <DepartureAirportsGroup
-              filters={filters}
-              onChange={onChange}
-              knownAirports={knownAirports}
-            />
-          </FilterGroup>
+          {roundTripSearch && (
+            <FilterGroup title="Trip type" defaultOpen>
+              <TripTypeGroup {...groupProps} />
+            </FilterGroup>
+          )}
 
-          <FilterGroup title="Stops" defaultOpen topRight={scope("stops")}>
+          <FilterGroup title="Stops" defaultOpen topRight={scope("stops")} onReset={reset("stops")}>
             <StopsGroup {...groupProps} />
           </FilterGroup>
 
-          <FilterGroup title="Price" defaultOpen topRight={scope("price")}>
+          <FilterGroup title="Price" defaultOpen topRight={scope("price")} onReset={reset("price")}>
             <PriceGroup {...groupProps} prices={prices} />
-          </FilterGroup>
-
-          {/* Hour preferences sits above Airlines, as the brief requires. */}
-          <FilterGroup title="Hour preferences">
-            <HourPreferencesGroup
-              filters={filters}
-              onChange={onChange}
-              preferences={preferences}
-              onPreferencesChange={onPreferencesChange}
-              isRoundTrip={isRoundTrip}
-              onOpenCalendar={() => setCalendarOpen(true)}
-            />
           </FilterGroup>
 
           <FilterGroup
             title="Airlines"
             count={filters.airlines.length || undefined}
             topRight={scope("airlines")}
+            onReset={reset("airlines")}
           >
             <AirlinesGroup {...groupProps} airlines={airlines} />
           </FilterGroup>
 
-          <FilterGroup title="Departure & arrival times" topRight={scope("times")}>
+          <FilterGroup title="Departure & arrival times" topRight={scope("times")} onReset={reset("times")}>
             <TimesGroup filters={filters} onChange={onChange} isRoundTrip={isRoundTrip} />
           </FilterGroup>
 
-          <FilterGroup title="Duration & layovers" topRight={scope("duration")}>
+          <FilterGroup title="Duration & layovers" topRight={scope("duration")} onReset={reset("duration")}>
             <DurationGroup {...groupProps} />
           </FilterGroup>
 
@@ -181,6 +181,7 @@ export default function FilterSidebar({
             title="Avoid airports"
             count={filters.excludeAirports.length || undefined}
             topRight={scope("avoidAirports")}
+            onReset={reset("avoidAirports")}
           >
             <AvoidAirportsGroup
               filters={filters}
@@ -189,47 +190,34 @@ export default function FilterSidebar({
             />
           </FilterGroup>
 
-          <FilterGroup title="Cabin" topRight={scope("cabin")}>
+          <FilterGroup
+            title="Hour preferences"
+            onReset={
+              curvesChanged
+                ? () =>
+                    onPreferencesChange({
+                      ...preferences,
+                      ranking: { ...preferences.ranking, curves: DEFAULT_RANKING_CONFIG.curves },
+                    })
+                : undefined
+            }
+          >
+            <HourPreferencesGroup
+              preferences={preferences}
+              onPreferencesChange={onPreferencesChange}
+              isRoundTrip={isRoundTrip}
+            />
+          </FilterGroup>
+
+          <FilterGroup title="Cabin" topRight={scope("cabin")} onReset={reset("cabin")}>
             <CabinGroup {...groupProps} />
           </FilterGroup>
 
-          <FilterGroup title="Emissions">
+          <FilterGroup title="Emissions" onReset={reset("emissions")}>
             <EmissionsGroup {...groupProps} />
           </FilterGroup>
-
-          <div className={`mt-3 border-t ${grayMid.border} pt-3`}>
-            <Button
-              styleType="tertiary-bordered"
-              disabled={activeCount === 0}
-              onClick={() => onChange(resetFilters(filters))}
-              className="w-full"
-            >
-              <Text size="small" value="Reset all filters" />
-            </Button>
-          </div>
         </div>
       </aside>
-
-      <AdvancedCalendarModal
-        // Remounting on open gives the modal a fresh working copy of the dates.
-        key={calendarOpen ? "calendar-open" : "calendar-closed"}
-        open={calendarOpen}
-        onClose={() => setCalendarOpen(false)}
-        query={{
-          ...query,
-          excludedDates: preferences.dates.excluded,
-          priorityDates: preferences.dates.priority,
-        }}
-        onApply={(next) =>
-          onPreferencesChange({
-            ...preferences,
-            dates: {
-              excluded: next.excludedDates ?? preferences.dates.excluded,
-              priority: next.priorityDates ?? preferences.dates.priority,
-            },
-          })
-        }
-      />
     </>
   );
 }

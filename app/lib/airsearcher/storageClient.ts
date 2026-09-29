@@ -11,6 +11,9 @@
  *   - `setItem` updates the copy at once and sends the write in the background:
  *     one request at a time, only the newest value per key, retried until it
  *     lands. While a write is pending, leaving the page asks for confirmation.
+ *   - A search's gathered flights live under records keys that are never in
+ *     the copy: `setRecordsItem` queues their writes the same way, and
+ *     `fetchRecordsItem` reads one search's when it is asked for.
  *
  * If the first load fails, writes are refused (as a blocked localStorage
  * refused them): a write built from the empty defaults would otherwise
@@ -25,6 +28,8 @@ import {
 import {
   STORAGE_KEYS,
   STORAGE_ROUTE,
+  type AnyStorageKey,
+  type RecordsKey,
   type StorageKey,
   type StorageSnapshot,
   type StorageValues,
@@ -37,7 +42,7 @@ let ready: Promise<void> | null = null;
 const cache = new Map<StorageKey, string | null>();
 
 /** Writes not yet confirmed by the server; the newest value per key. */
-const pending = new Map<StorageKey, string | null>();
+const pending = new Map<AnyStorageKey, string | null>();
 let draining = false;
 const idleWaiters: (() => void)[] = [];
 
@@ -128,6 +133,34 @@ export function setItem(key: StorageKey, value: string | null): boolean {
   return true;
 }
 
+/**
+ * Queues a write of one search's gathered flights (null removes them). Refused
+ * like `setItem`: when too large, or before the saved data has loaded.
+ */
+export function setRecordsItem(key: RecordsKey, value: string | null): boolean {
+  if (state !== "loaded") return false;
+  if (value !== null && value.length > STORAGE_MAX_VALUE_CHARS) return false;
+  pending.set(key, value);
+  void drain();
+  return true;
+}
+
+/** One search's gathered flights, or null when none are saved or the read failed. */
+export async function fetchRecordsItem(key: RecordsKey): Promise<string | null> {
+  // A write still on its way is newer than what the server holds.
+  if (pending.has(key)) return pending.get(key) ?? null;
+  try {
+    const response = await fetch(`${STORAGE_ROUTE}?key=${encodeURIComponent(key)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { value?: unknown };
+    return typeof body.value === "string" ? body.value : null;
+  } catch {
+    return null;
+  }
+}
+
 /* ── The write queue ─────────────────────────────────────────────────────── */
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -145,7 +178,7 @@ function setGuard(on: boolean): void {
 }
 
 /** Sends one write. "retry" for failures that may pass later. */
-async function send(key: StorageKey, value: string | null): Promise<"done" | "retry"> {
+async function send(key: AnyStorageKey, value: string | null): Promise<"done" | "retry"> {
   try {
     const response = await fetch(STORAGE_ROUTE, {
       method: "PUT",
@@ -168,7 +201,7 @@ async function drain(): Promise<void> {
   let failures = 0;
 
   while (pending.size > 0) {
-    const [key, value] = pending.entries().next().value as [StorageKey, string | null];
+    const [key, value] = pending.entries().next().value as [AnyStorageKey, string | null];
     pending.delete(key);
     if ((await send(key, value)) === "done") {
       failures = 0;

@@ -6,7 +6,7 @@
  * of this pipeline builds its route-keyed flight pool from.
  */
 
-import { DEFAULT_RANKING_CONFIG, levelToWeight } from "@/lib/airsearcher/config/ranking";
+import { DEFAULT_RANKING_CONFIG, type RankingWeights } from "@/lib/airsearcher/config/ranking";
 import type { RankingPreferences } from "@/lib/airsearcher/config/ranking";
 import type { FilterState } from "@/lib/airsearcher/config/filters";
 import {
@@ -96,12 +96,9 @@ function labelFor(query: SearchQuery): string {
   return `${where} · ${date}`;
 }
 
-/** Weights come from the sidebar's five-level scale, via the ported arithmetic. */
-export function weightsOf(filters: FilterState) {
-  return {
-    price: levelToWeight(filters.priceWeight),
-    hour: levelToWeight(filters.hourWeight),
-  };
+/** The score weights the sidebar's three linked sliders set. */
+export function weightsOf(filters: FilterState): RankingWeights {
+  return filters.weights;
 }
 
 /**

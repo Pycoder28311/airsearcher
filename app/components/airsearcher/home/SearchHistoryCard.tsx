@@ -12,7 +12,7 @@ import {
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { describeTripLength } from "@/lib/airsearcher/queryPlan";
 import { daysBetween, formatAge, formatDate } from "@/lib/airsearcher/time";
-import { isStale, type StoredSearch } from "@/lib/airsearcher/storage";
+import { gatheredFlightsOf, isStale, type StoredSearch } from "@/lib/airsearcher/storage";
 import { cityName } from "@/data/places";
 import { mergedDestinations, type SearchQuery } from "@/lib/airsearcher/types";
 import { useState } from "react";
@@ -55,10 +55,7 @@ export default function SearchHistoryCard({
 
   const curlOnly = entry.kind === "google-curl";
   const arrangements = curlOnly ? (entry.googleCurl?.arrangements ?? []) : entry.arrangements;
-  const gathered = ((curlOnly ? entry.googleCurl?.records : entry.records) ?? []).reduce(
-    (sum, record) => sum + record.flights.length,
-    0,
-  );
+  const gathered = gatheredFlightsOf(entry);
 
   const dates =
     entry.query.dateMode === "exact"

@@ -5,18 +5,19 @@
  * which origin groups fly direct and which gather at a hub first, assembles a
  * complete plan for the whole group, and scores it.
  *
- * The scoring arithmetic is NOT reinvented — `priceIndex`, `legHourIndex` and
- * `normalizeWeights` come from `ranking.ts` unchanged. The additions are a
- * passenger-weighted mean across the origin groups, and a stop index that
- * counts a change between tickets the same as one inside a ticket.
+ * The scoring arithmetic is NOT reinvented — `priceIndex` and `legHourIndex`
+ * come from `ranking.ts` unchanged. The additions are a passenger-weighted
+ * mean across the origin groups, a stop index that counts a change between
+ * tickets the same as one inside a ticket, and a stops weight beside price
+ * and hours.
  */
 
 import {
   DATE_PRIORITY_BONUS,
   MIN_GATHER_BUFFER_MINUTES,
   STOP_SCORES,
-  STOP_WEIGHT,
 } from "@/lib/airsearcher/config/constants";
+import type { FilterScope } from "@/lib/airsearcher/config/filters";
 import { journeyAsLeg, journeyMinutes, journeyStopCount } from "@/lib/airsearcher/journeyStops";
 import type {
   RankingPreferences,
@@ -24,7 +25,6 @@ import type {
 } from "@/lib/airsearcher/config/ranking";
 import {
   legHourIndex,
-  normalizeWeights,
   priceIndex,
   compareNullable,
 } from "@/lib/airsearcher/ranking";
@@ -249,9 +249,45 @@ export function journeyArrival(journey: Journey): string | null {
   return arrivalTimeOf(flights[flights.length - 1]);
 }
 
-/** What one passenger of a group pays, every flight in both directions. */
-export function pricePerHeadOf(leg: GroupLeg): number {
-  return legFlights(leg).reduce((sum, flight) => sum + (flight.price ?? 0), 0);
+/**
+ * What one passenger of a group pays: every flight in both directions, or
+ * only the going or the returning ones when a filter's scope says so.
+ */
+export function pricePerHeadOf(leg: GroupLeg, scope: FilterScope = "both"): number {
+  const flights =
+    scope === "going"
+      ? journeyFlights(leg.outbound)
+      : scope === "returning"
+        ? leg.return
+          ? journeyFlights(leg.return)
+          : []
+        : legFlights(leg);
+  return flights.reduce((sum, flight) => sum + (flight.price ?? 0), 0);
+}
+
+/**
+ * The results of a round-trip search seen as one-way trips: each keeps only
+ * its going flights, with its prices and totals worked out again without the
+ * way back. Results that fly out the same way merge into one — the cheapest
+ * way out among them, as `uniqueArrangements` keeps — so each outbound plan
+ * appears once. They are still only the ways out that made the round-trip
+ * results, not a fresh one-way search.
+ */
+export function asOneWay(arrangements: Arrangement[]): Arrangement[] {
+  return uniqueArrangements(
+    arrangements.map((arrangement) => {
+      if (arrangement.returnDate === null && arrangement.legs.every((leg) => !leg.return)) {
+        return arrangement;
+      }
+      const legs = arrangement.legs.map((leg) => ({ ...leg, return: null }));
+      return {
+        ...arrangement,
+        returnDate: null,
+        legs,
+        totals: totalsOf(legs, arrangement.gatheringAirport),
+      };
+    }),
+  );
 }
 
 /** Cheapest and priciest per-passenger price across a result's groups. */
@@ -265,8 +301,8 @@ export interface PriceRange {
  * directions and every ticket of a stop included — shown instead of the sum
  * over everyone, which no single traveller pays.
  */
-export function groupPriceRange(arrangement: Arrangement): PriceRange {
-  const prices = arrangement.legs.map(pricePerHeadOf);
+export function groupPriceRange(arrangement: Arrangement, scope: FilterScope = "both"): PriceRange {
+  const prices = arrangement.legs.map((leg) => pricePerHeadOf(leg, scope));
   if (prices.length === 0) return { min: 0, max: 0 };
   return { min: Math.round(Math.min(...prices)), max: Math.round(Math.max(...prices)) };
 }
@@ -591,9 +627,9 @@ function groupStopQuality(legs: GroupLeg[]): number {
  *
  * `priceIndex` is relative to the current set, exactly as in the reference
  * project: filtering something out legitimately changes everyone's score.
- * Flying without stops takes `STOP_WEIGHT` of the score and price and hours
- * share the rest. Priority dates add a small bonus so a favoured date wins
- * between near-equal options without dragging a clearly worse one to the top.
+ * Stops, price and hours each take their share of `weights` (scaled to add up
+ * to 1). Priority dates add a small bonus so a favoured date wins between
+ * near-equal options without dragging a clearly worse one to the top.
  */
 export function scoreArrangements(
   arrangements: Arrangement[],
@@ -605,7 +641,15 @@ export function scoreArrangements(
   const min = totals.length > 0 ? Math.min(...totals) : 0;
   const max = totals.length > 0 ? Math.max(...totals) : 0;
 
-  const base = normalizeWeights(weights);
+  const stopsWeight = Math.max(weights.stops, 0);
+  const priceWeight = Math.max(weights.price, 0);
+  const hourWeight = Math.max(weights.hour, 0);
+  const total = stopsWeight + priceWeight + hourWeight;
+  // All three at 0 would divide by zero: an even split keeps the ranking meaningful.
+  const share =
+    total === 0
+      ? { stops: 1 / 3, price: 1 / 3, hour: 1 / 3 }
+      : { stops: stopsWeight / total, price: priceWeight / total, hour: hourWeight / total };
 
   // Like price, stops are judged against the rest of the set: the fewest stops
   // here score 1 and the most 0, so a stop always costs a lot of score.
@@ -619,17 +663,16 @@ export function scoreArrangements(
     const stops = best > worst ? (quality[i] - worst) / (best - worst) : 1;
 
     // With no usable hour index the hour term would read as zero convenience,
-    // which is a lie. Drop it and give price the full weight.
-    const effective = hourIndex === null ? { price: 1, hour: 0 } : base;
+    // which is a lie. Drop it and give its share to price.
+    const effective =
+      hourIndex === null
+        ? { stops: share.stops, price: share.price + share.hour, hour: 0 }
+        : share;
 
     const priority = priorityDates[arrangement.departureDate] ?? 0;
     const bonus = Math.max(0, Math.min(3, priority)) * DATE_PRIORITY_BONUS;
 
-    const applied = {
-      stops: STOP_WEIGHT,
-      price: (1 - STOP_WEIGHT) * effective.price,
-      hour: (1 - STOP_WEIGHT) * effective.hour,
-    };
+    const applied = effective;
     const score =
       stops * applied.stops + price * applied.price + (hourIndex ?? 0) * applied.hour + bonus;
 

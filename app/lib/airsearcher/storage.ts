@@ -18,6 +18,7 @@ import {
 import {
   DEFAULT_DATE_PREFERENCES,
   DEFAULT_RANKING_CONFIG,
+  isRankingWeights,
   type DatePreferences,
   type RankingPreferences,
 } from "@/lib/airsearcher/config/ranking";
@@ -28,10 +29,22 @@ import {
 import {
   FILTERS_KEY,
   PREFS_KEY,
+  recordsKeyOf,
   SEARCHES_KEY,
   type StorageKey,
 } from "@/lib/airsearcher/db/keys";
-import { getItem, setItem } from "@/lib/airsearcher/storageClient";
+import {
+  countFlights,
+  shownRecordsOf,
+  splitRecords,
+  type StoredRecords,
+} from "@/lib/airsearcher/db/records";
+import {
+  fetchRecordsItem,
+  getItem,
+  setItem,
+  setRecordsItem,
+} from "@/lib/airsearcher/storageClient";
 import { destinationsOf } from "@/lib/airsearcher/types";
 import type {
   Arrangement,
@@ -60,11 +73,16 @@ export interface StoredSearch {
   /**
    * Every flight the search gathered, one record per route.
    *
-   * Best-effort: if the browser refuses the write because it is too large, the
-   * entry is saved without it rather than lost. Absent on entries saved before
-   * raw data was kept, so always treat it as optional.
+   * Only on a search being built: saving moves every provider's records to
+   * the search's own records key (see `db/records.ts`), read back with
+   * `loadGatheredFlights`, and leaves their count in `gatheredFlights`.
    */
   records?: FlightRecord[];
+  /**
+   * How many flights the search's records hold — the number the history card
+   * shows without loading them. Absent when none were kept.
+   */
+  gatheredFlights?: number;
   /**
    * The same search answered from Travelpayouts, built by the same pipeline.
    * Absent on entries saved before it existed; `error` is set when the call
@@ -243,36 +261,68 @@ export function loadSearches(): StoredSearch[] {
 /**
  * Adds or replaces an entry, keeping at most MAX_SAVED_SEARCHES.
  *
- * The raw flight records are far bulkier than the arrangements, so when the
- * browser refuses the write they are shed in stages rather than losing the
- * search: first from the older entries, then from this one. The arrangements
- * always survive, because they are what the results page needs.
+ * Its gathered flights are written to the search's own records key and only
+ * their count stays in the list, which then holds little beyond the
+ * arrangements the results page needs. If the flights are refused (too large)
+ * the search is still saved, just without them.
  */
 export function saveSearch(entry: StoredSearch): void {
   const now = Date.now();
-  const existing = loadSearches()
-    .filter((e) => e.id !== entry.id)
-    .map((e) => (isStale(e, now) ? withoutResults(e) : e));
-  const next = [entry, ...existing].slice(0, MAX_SAVED_SEARCHES);
+  const split = splitRecords(entry);
+  let saved = split.entry;
+  if (
+    split.records &&
+    !setRecordsItem(recordsKeyOf(entry.id), JSON.stringify(split.records))
+  ) {
+    saved = { ...saved, gatheredFlights: undefined };
+  }
 
-  if (writeJson(SEARCHES_KEY, next)) return;
+  const others = loadSearches().filter((e) => e.id !== entry.id);
+  const outdated = others.filter((e) => isStale(e, now) && !e.resultsRemoved);
+  const next = [saved, ...others.map((e) => (outdated.includes(e) ? withoutResults(e) : e))];
+  const kept = next.slice(0, MAX_SAVED_SEARCHES);
 
-  // Keep the newest search's raw data, drop everyone else's.
-  const slimOthers = next.map((e, index) => (index === 0 ? e : withoutRecords(e)));
-  if (writeJson(SEARCHES_KEY, slimOthers)) return;
-
-  // Still too big: keep the arrangements, lose the raw data entirely.
-  writeJson(SEARCHES_KEY, next.map(withoutRecords));
+  if (!writeJson(SEARCHES_KEY, kept)) return;
+  for (const gone of [...outdated, ...next.slice(MAX_SAVED_SEARCHES)]) removeRecords(gone.id);
 }
 
-/** An entry with every provider's raw flight records removed. */
-function withoutRecords(entry: StoredSearch): StoredSearch {
-  return {
-    ...entry,
-    records: undefined,
-    travelpayouts: entry.travelpayouts && { ...entry.travelpayouts, records: undefined },
-    googleCurl: entry.googleCurl && { ...entry.googleCurl, records: undefined },
-  };
+/** Deletes a search's gathered flights. */
+function removeRecords(id: string): void {
+  setRecordsItem(recordsKeyOf(id), null);
+}
+
+/**
+ * Every flight a search gathered, grouped by request, as its data window shows
+ * them: fetched on demand from the search's records key. Empty when none were
+ * kept or they couldn't be read.
+ */
+export async function loadGatheredFlights(entry: StoredSearch): Promise<FlightRecord[]> {
+  // A search from before the records moved out that still holds its own.
+  const inline = shownRecordsOf(entry.kind, {
+    records: entry.records,
+    googleCurl: entry.googleCurl?.records,
+  });
+  if (inline.length > 0) return inline;
+  if (!entry.gatheredFlights) return [];
+
+  const raw = await fetchRecordsItem(recordsKeyOf(entry.id));
+  if (!raw) return [];
+  try {
+    const stored = JSON.parse(raw) as StoredRecords;
+    return shownRecordsOf(entry.kind, stored);
+  } catch {
+    return [];
+  }
+}
+
+/** How many flights a search gathered, without loading them. */
+export function gatheredFlightsOf(entry: StoredSearch): number {
+  return (
+    entry.gatheredFlights ??
+    countFlights(
+      shownRecordsOf(entry.kind, { records: entry.records, googleCurl: entry.googleCurl?.records }),
+    )
+  );
 }
 
 /**
@@ -286,6 +336,7 @@ function withoutResults(entry: StoredSearch): StoredSearch {
     ...entry,
     arrangements: [],
     records: undefined,
+    gatheredFlights: undefined,
     priceGrid: undefined,
     travelpayouts: entry.travelpayouts && { arrangements: [], error: entry.travelpayouts.error },
     googleCurl: entry.googleCurl && {
@@ -311,14 +362,17 @@ export function pruneOutdatedResults(now: number = Date.now()): number {
     SEARCHES_KEY,
     all.map((entry) => (outdated.includes(entry) ? withoutResults(entry) : entry)),
   );
-  return written ? outdated.length : 0;
+  if (!written) return 0;
+  for (const entry of outdated) removeRecords(entry.id);
+  return outdated.length;
 }
 
 export function removeSearch(id: string): void {
-  writeJson(
+  const written = writeJson(
     SEARCHES_KEY,
     loadSearches().filter((entry) => entry.id !== id),
   );
+  if (written) removeRecords(id);
 }
 
 export function findSearchById(id: string): StoredSearch | null {
@@ -362,6 +416,10 @@ export function loadFilters(): FilterState {
       ...DEFAULT_FILTERS.scopes,
       ...((raw as Partial<FilterState>).scopes ?? {}),
     },
+    // Saves from before the sliders held two five-level choices instead.
+    weights: isRankingWeights((raw as Partial<FilterState>).weights)
+      ? (raw as FilterState).weights
+      : DEFAULT_FILTERS.weights,
   };
 }
 

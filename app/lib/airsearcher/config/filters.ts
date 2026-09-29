@@ -7,21 +7,12 @@
  *
  * Ported from the reference project with the changes AirSearcher requires:
  * multi-city is gone, arrival-time windows sit alongside departure windows,
- * every scopable filter can target one direction, weights are five-level, and
- * the departure airports are editable from here.
+ * every scopable filter can target one direction, and stops, price and hours
+ * are weighted with three linked sliders.
  */
 
-import type { AirportCode, OriginGroup, TripType } from "@/lib/airsearcher/types";
-import {
-  DEFAULT_GATHERING_AIRPORT,
-  DEFAULT_PASSENGERS_PER_ORIGIN,
-  GREEK_ORIGIN_DEFAULTS,
-} from "./constants";
-import {
-  DEFAULT_HOUR_LEVEL,
-  DEFAULT_PRICE_LEVEL,
-  type WeightLevel,
-} from "./ranking";
+import type { AirportCode, TripType } from "@/lib/airsearcher/types";
+import { DEFAULT_SCORE_WEIGHTS, type RankingWeights } from "./ranking";
 
 export type StopOption = "non-stop" | "1" | "2" | "3+";
 export type AirlineMode = "include" | "exclude";
@@ -75,13 +66,8 @@ export interface FilterState {
   /** Per-filter direction targeting. Ignored on a one-way search. */
   scopes: Record<ScopableFilter, FilterScope>;
 
-  /** Editable from the sidebar as well as the main search. */
-  departureAirports: OriginGroup[];
-  preferredGatheringAirport: AirportCode;
-
-  /** Five-level weights feeding the ranking arithmetic. */
-  priceWeight: WeightLevel;
-  hourWeight: WeightLevel;
+  /** How much stops, price and hours count in a result's score; they add up to 100. */
+  weights: RankingWeights;
 }
 
 const DEFAULT_SCOPES: Record<ScopableFilter, FilterScope> = {
@@ -110,13 +96,7 @@ export const DEFAULT_FILTERS: FilterState = {
   travelClass: "economy",
   lessEmissionsOnly: false,
   scopes: { ...DEFAULT_SCOPES },
-  departureAirports: GREEK_ORIGIN_DEFAULTS.map((airport) => ({
-    airport,
-    passengers: DEFAULT_PASSENGERS_PER_ORIGIN,
-  })),
-  preferredGatheringAirport: DEFAULT_GATHERING_AIRPORT,
-  priceWeight: DEFAULT_PRICE_LEVEL,
-  hourWeight: DEFAULT_HOUR_LEVEL,
+  weights: { ...DEFAULT_SCORE_WEIGHTS },
 };
 
 export const STOP_OPTIONS: { value: StopOption; label: string }[] = [
@@ -167,17 +147,80 @@ export function countActiveFilters(filters: FilterState): number {
   return count;
 }
 
+/** The sidebar sections that can be reset on their own. Trip type cannot: it describes the search. */
+export type ResettableGroup =
+  | "weights"
+  | "stops"
+  | "price"
+  | "airlines"
+  | "times"
+  | "duration"
+  | "avoidAirports"
+  | "cabin"
+  | "emissions";
+
+/** The values each section sets; resetting it restores these and its scope. */
+const GROUP_FIELDS: Record<ResettableGroup, (keyof FilterState)[]> = {
+  weights: ["weights"],
+  stops: ["stops"],
+  price: ["priceRange"],
+  airlines: ["airlineMode", "airlines"],
+  times: ["outboundWindow", "outboundArrivalWindow", "returnWindow", "returnArrivalWindow"],
+  duration: ["maxDurationMinutes", "layoverRange"],
+  avoidAirports: ["excludeAirports"],
+  cabin: ["travelClass"],
+  emissions: ["lessEmissionsOnly"],
+};
+
+const GROUP_SCOPE: Partial<Record<ResettableGroup, ScopableFilter>> = {
+  stops: "stops",
+  price: "price",
+  airlines: "airlines",
+  times: "times",
+  duration: "duration",
+  avoidAirports: "avoidAirports",
+  cabin: "cabin",
+};
+
+const RESETTABLE_GROUPS = Object.keys(GROUP_FIELDS) as ResettableGroup[];
+
+/** Whether a section differs from its defaults, its scope included. */
+export function groupChanged(filters: FilterState, group: ResettableGroup): boolean {
+  const scope = GROUP_SCOPE[group];
+  return (
+    (scope !== undefined && filters.scopes[scope] !== DEFAULT_SCOPES[scope]) ||
+    GROUP_FIELDS[group].some(
+      (field) => JSON.stringify(filters[field]) !== JSON.stringify(DEFAULT_FILTERS[field]),
+    )
+  );
+}
+
+/** One section back to its defaults, its scope included; everything else stays. */
+export function resetGroup(filters: FilterState, group: ResettableGroup): FilterState {
+  const next: FilterState = { ...filters };
+  for (const field of GROUP_FIELDS[group]) {
+    // A copy, so later edits never reach the shared defaults.
+    (next as unknown as Record<string, unknown>)[field] = structuredClone(DEFAULT_FILTERS[field]);
+  }
+  const scope = GROUP_SCOPE[group];
+  if (scope !== undefined) next.scopes = { ...filters.scopes, [scope]: DEFAULT_SCOPES[scope] };
+  return next;
+}
+
+/** Whether "Reset filters" would change anything: any section off its defaults. */
+export function anyGroupChanged(filters: FilterState): boolean {
+  return RESETTABLE_GROUPS.some((group) => groupChanged(filters, group));
+}
+
 /**
  * Restores every filter, scope and weight to its default while keeping the trip
- * type and the departure airports — those describe the search itself, not a
- * narrowing of its results, so resetting them would silently change the query.
+ * type — it describes the search itself, not a narrowing of its results, so
+ * resetting it would silently change the query.
  */
 export function resetFilters(current: FilterState): FilterState {
   return {
     ...DEFAULT_FILTERS,
     type: current.type,
-    departureAirports: current.departureAirports,
-    preferredGatheringAirport: current.preferredGatheringAirport,
     scopes: { ...DEFAULT_SCOPES },
   };
 }

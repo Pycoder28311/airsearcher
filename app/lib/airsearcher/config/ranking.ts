@@ -3,7 +3,7 @@
  *
  * Ported from the reference project (`serpAPItest/my-app/config/ranking.ts`)
  * unchanged, so AirSearcher weights flights exactly as that project does. The
- * only addition is the five-level weight scale the filter sidebar exposes.
+ * addition is the stops weight, set with price and hours in the sidebar.
  *
  * Curves hold exactly 24 values, one per hour of the day, each 0..100, where
  * 100 means "ideal time to fly" and 0 means "avoid".
@@ -13,6 +13,8 @@
 export type HourCurve = number[];
 
 export interface RankingWeights {
+  /** Relative importance of few stops. */
+  stops: number;
   /** Relative importance of a cheap price. */
   price: number;
   /** Relative importance of convenient hours. */
@@ -73,9 +75,11 @@ const DEFAULT_RETURN_CURVE: HourCurve = [
 ];
 
 export const DEFAULT_RANKING_CONFIG: RankingPreferences = {
+  // The same split as DEFAULT_SCORE_WEIGHTS below.
   weights: {
-    price: 60,
-    hour: 40,
+    stops: 40,
+    price: 30,
+    hour: 30,
   },
   departureArrivalRatio: 0.65,
   curves: {
@@ -84,51 +88,43 @@ export const DEFAULT_RANKING_CONFIG: RankingPreferences = {
   },
 };
 
-/* ── Five-level weights ──────────────────────────────────────────────────────
- * The sidebar exposes weights as five named levels rather than a slider. They
- * map onto the same 0..100 numbers `normalizeWeights` already consumes, so the
- * ported arithmetic is untouched — only the input changes.
+/* ── Score weights ──────────────────────────────────────────────────────────
+ * Stops, price and hours share a result's score. The sidebar sets them with
+ * three linked sliders that always add up to 100.
  */
 
-export const WEIGHT_LEVELS = [
-  "none",
-  "a little",
-  "mid",
-  "much",
-  "completely",
-] as const;
+/** Stops 40 %, price 30 %, hours 30 %. */
+export const DEFAULT_SCORE_WEIGHTS: RankingWeights = { stops: 40, price: 30, hour: 30 };
 
-export type WeightLevel = (typeof WEIGHT_LEVELS)[number];
-
-export const WEIGHT_VALUES: Record<WeightLevel, number> = {
-  none: 0,
-  "a little": 25,
-  mid: 50,
-  much: 75,
-  completely: 100,
-};
-
-export function levelToWeight(level: WeightLevel): number {
-  return WEIGHT_VALUES[level];
+/**
+ * Moves one weight to `value` (0..100) and shares the rest between the other
+ * two in the proportion they had, so the three still add up to 100. When both
+ * others were 0 they split the rest evenly. Whole numbers only.
+ */
+export function rebalanceWeights(
+  weights: RankingWeights,
+  key: keyof RankingWeights,
+  value: number,
+): RankingWeights {
+  const fixed = Math.min(Math.max(Math.round(value), 0), 100);
+  const [a, b] = (["stops", "price", "hour"] as const).filter((k) => k !== key);
+  const rest = 100 - fixed;
+  const before = Math.max(weights[a], 0) + Math.max(weights[b], 0);
+  const shareA = before === 0 ? rest / 2 : (rest * Math.max(weights[a], 0)) / before;
+  const roundedA = Math.round(shareA);
+  return { ...weights, [key]: fixed, [a]: roundedA, [b]: rest - roundedA };
 }
 
-/** Nearest level to a raw 0..100 weight, for migrating stored numeric values. */
-export function weightToLevel(value: number): WeightLevel {
-  let best: WeightLevel = "mid";
-  let bestDistance = Infinity;
-  for (const level of WEIGHT_LEVELS) {
-    const distance = Math.abs(WEIGHT_VALUES[level] - value);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = level;
-    }
-  }
-  return best;
+/** Whether a stored value is three usable weights; older saves had levels instead. */
+export function isRankingWeights(value: unknown): value is RankingWeights {
+  const w = value as Partial<RankingWeights> | null;
+  return (
+    typeof w === "object" &&
+    w !== null &&
+    [w.stops, w.price, w.hour].every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0) &&
+    (w.stops ?? 0) + (w.price ?? 0) + (w.hour ?? 0) > 0
+  );
 }
-
-/** Level defaults matching DEFAULT_RANKING_CONFIG's 60/40 split. */
-export const DEFAULT_PRICE_LEVEL: WeightLevel = "much";
-export const DEFAULT_HOUR_LEVEL: WeightLevel = "mid";
 
 /* ── Date preferences ───────────────────────────────────────────────────── */
 

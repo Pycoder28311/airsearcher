@@ -2,6 +2,7 @@ import type { IconType } from "react-icons";
 import type { TextSize } from "@/config/textConfig";
 import {
   FiHome,
+  FiRotateCcw,
   FiSearch,
   FiUser,
   FiSettings,
@@ -75,6 +76,7 @@ export const ICONS = {
   palette: FiDroplet,
   plane: LuPlane,
   "external-link": FiExternalLink,
+  reset: FiRotateCcw,
 } satisfies Record<string, IconType>;
 
 export type IconName = keyof typeof ICONS;

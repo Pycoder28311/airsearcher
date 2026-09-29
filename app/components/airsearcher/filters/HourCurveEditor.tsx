@@ -7,14 +7,28 @@ import type { HourCurve } from "@/lib/airsearcher/config/ranking";
 
 const GRAPH_HEIGHT_PX = 120;
 
+/** Hours per bar: the curve keeps one value per hour, edited three at a time. */
+const HOURS_PER_BAR = 3;
+const BARS = 24 / HOURS_PER_BAR;
+
 function clamp(value: number): number {
   return Math.min(Math.max(Math.round(value), 0), 100);
 }
 
+/** "06–09": the hours a bar covers. */
+function barLabel(bar: number): string {
+  const pad = (hour: number) => String(hour).padStart(2, "0");
+  return `${pad(bar * HOURS_PER_BAR)}–${pad((bar + 1) * HOURS_PER_BAR)}`;
+}
+
 /**
- * The 24-bar hour preference curve, ported from the reference project.
+ * The hour preference curve, ported from the reference project, drawn as 8
+ * bars of 3 hours each.
  *
  * Drag across it to paint: 100 means "ideal time to fly", 0 means "avoid".
+ * Painting a bar sets all three of its hours, so the ranking still reads one
+ * value per hour. A bar shows its hours' average, which is what an older
+ * hour-by-hour curve looks like at this coarser scale.
  * Pointer capture keeps a drag alive when it leaves the element.
  */
 export default function HourCurveEditor({
@@ -30,13 +44,20 @@ export default function HourCurveEditor({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [activeHour, setActiveHour] = useState<number | null>(null);
+  const [activeBar, setActiveBar] = useState<number | null>(null);
 
-  const setHour = useCallback(
-    (hour: number, next: number) => {
-      if (hour < 0 || hour > 23) return;
+  const bars = Array.from({ length: BARS }, (_, bar) => {
+    const hours = value.slice(bar * HOURS_PER_BAR, (bar + 1) * HOURS_PER_BAR);
+    return Math.round(hours.reduce((sum, level) => sum + level, 0) / hours.length);
+  });
+
+  const setBar = useCallback(
+    (bar: number, next: number) => {
+      if (bar < 0 || bar >= BARS) return;
       const updated = [...value];
-      updated[hour] = clamp(next);
+      for (let hour = bar * HOURS_PER_BAR; hour < (bar + 1) * HOURS_PER_BAR; hour++) {
+        updated[hour] = clamp(next);
+      }
       onChange(updated);
     },
     [value, onChange],
@@ -47,23 +68,23 @@ export default function HourCurveEditor({
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect || rect.width === 0 || rect.height === 0) return;
 
-      const hour = Math.floor(((clientX - rect.left) / rect.width) * 24);
+      const bar = Math.floor(((clientX - rect.left) / rect.width) * BARS);
       const level = (1 - (clientY - rect.top) / rect.height) * 100;
 
-      setActiveHour(Math.min(Math.max(hour, 0), 23));
-      setHour(hour, level);
+      setActiveBar(Math.min(Math.max(bar, 0), BARS - 1));
+      setBar(bar, level);
     },
-    [setHour],
+    [setBar],
   );
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between gap-2">
         <Text size="very small" value={label} className="text-gray-600" />
-        {activeHour !== null && (
+        {activeBar !== null && (
           <Text
             size="very small"
-            value={`${String(activeHour).padStart(2, "0")}:00 · ${value[activeHour]}`}
+            value={`${barLabel(activeBar)} · ${bars[activeBar]}`}
             className="tabular-nums text-gray-400"
           />
         )}
@@ -84,25 +105,32 @@ export default function HourCurveEditor({
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
           setDragging(false);
-          setActiveHour(null);
+          setActiveBar(null);
         }}
         style={{ height: GRAPH_HEIGHT_PX }}
         className={`flex cursor-crosshair touch-none items-end gap-px ${radius} border ${grayMid.border} bg-white p-1`}
       >
-        {value.map((level, hour) => (
+        {bars.map((level, bar) => (
           <div
-            key={hour}
+            key={bar}
+            title={`${barLabel(bar)} · ${level}`}
             style={{ height: `${Math.max(2, level)}%` }}
             className={`flex-1 rounded-sm ${
-              hour === activeHour ? "bg-orange-500" : "bg-blue-500/70"
+              bar === activeBar ? "bg-orange-500" : "bg-blue-500/70"
             }`}
           />
         ))}
       </div>
 
-      <div className="flex justify-between">
-        {["00", "06", "12", "18", "23"].map((hour) => (
-          <Text key={hour} size="very small" value={hour} className="text-gray-400" />
+      {/* Each bar's first hour under it, spaced like the bars (the p-1 inset included). */}
+      <div className="flex gap-px px-1">
+        {bars.map((_, bar) => (
+          <Text
+            key={bar}
+            size="very small"
+            value={String(bar * HOURS_PER_BAR).padStart(2, "0")}
+            className="flex-1 text-center text-gray-400 tabular-nums"
+          />
         ))}
       </div>
 

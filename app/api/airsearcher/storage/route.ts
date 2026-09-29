@@ -1,11 +1,12 @@
 import { STORAGE_MAX_VALUE_CHARS } from "@/lib/airsearcher/config/storage";
 import {
+  isRecordsKey,
   isStorageKey,
   STORAGE_KEYS,
   type StorageKey,
   type StorageSnapshot,
 } from "@/lib/airsearcher/db/keys";
-import { getValues, importOnce, isImported, setValue } from "@/lib/airsearcher/db/sqlite";
+import { getValue, getValues, importOnce, isImported, setValue } from "@/lib/airsearcher/db/sqlite";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +16,8 @@ export const dynamic = "force-dynamic";
  * file that replaced localStorage.
  *
  *   GET   → every key's value, and whether the one-time import has happened
+ *   GET   ?key=<records key> → { value } of that one search's gathered flights,
+ *           which the plain GET leaves out (see `db/records.ts`)
  *   PUT   → { key, value } saves one key (value null removes it)
  *   POST  → { values } imports the browser's old localStorage, once
  *
@@ -71,6 +74,11 @@ function valueError(value: unknown): string | null {
 export async function GET(request: Request) {
   const blocked = localOnly(request);
   if (blocked) return blocked;
+  const key = new URL(request.url).searchParams.get("key");
+  if (key !== null) {
+    if (!isRecordsKey(key)) return fail("Unknown storage key.", 400);
+    return guarded(() => reply({ value: getValue(key) }));
+  }
   return guarded(() => reply({ values: getValues(), imported: isImported() } satisfies StorageSnapshot));
 }
 
@@ -79,7 +87,9 @@ export async function PUT(request: Request) {
   if (blocked) return blocked;
 
   const body = await jsonOf(request);
-  if (!body || !isStorageKey(body.key)) return fail("Unknown storage key.", 400);
+  if (!body || !(isStorageKey(body.key) || isRecordsKey(body.key))) {
+    return fail("Unknown storage key.", 400);
+  }
   const key = body.key;
   if (body.value !== null) {
     const error = valueError(body.value);

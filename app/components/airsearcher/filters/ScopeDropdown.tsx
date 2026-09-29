@@ -61,14 +61,13 @@ export default function ScopeDropdown({
       {...modal.triggerProps}
       styleType="tertiary"
       onClick={(() => modal.toggle({ component: panel, ...POSITION })) as () => void}
-      className="gap-1 px-2! py-1!"
+      className="px-2! py-1!"
     >
       <Text
         size="very small"
         value={current.label}
         className={value === "both" ? "text-gray-500" : colorSecondary.text}
       />
-      <Text icon="chevron-down" size="very small" className="text-gray-400" />
     </Button>
   );
 }

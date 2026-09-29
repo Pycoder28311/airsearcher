@@ -12,10 +12,12 @@ import assert from "node:assert/strict";
 import { hourValue, priceIndex, normalizeWeights } from "@/lib/airsearcher/ranking";
 import {
   buildArrangements,
+  asOneWay,
   everyoneGetsHome,
   enumerateRoutings,
   ARRANGEMENTS_PER_ROUTING,
   poolKey,
+  pricePerHeadOf,
   scoreArrangements,
   uniqueArrangements,
   type FlightPool,
@@ -40,9 +42,15 @@ import {
   connectingAirports,
   matchesLayover,
   matchesStops,
+  stopsOf,
 } from "@/lib/airsearcher/filtering";
 import { journeyStopCount } from "@/lib/airsearcher/journeyStops";
-import { DEFAULT_FILTERS } from "@/lib/airsearcher/config/filters";
+import {
+  anyGroupChanged,
+  DEFAULT_FILTERS,
+  groupChanged,
+  resetGroup,
+} from "@/lib/airsearcher/config/filters";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { buildSearchResult, usesSerpApi } from "@/lib/airsearcher/search";
 import { MAX_AIRPORTS_PER_REQUEST } from "@/lib/airsearcher/config/constants";
@@ -52,12 +60,18 @@ import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/st
 import { resetStorageClientForChecks } from "@/lib/airsearcher/storageClient";
 import { toggleAirport, selectCity } from "@/lib/airsearcher/mapSelection";
 import { mockFlightsFor, mockPool } from "@/lib/airsearcher/mockFlights";
-import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
+import {
+  DEFAULT_RANKING_CONFIG,
+  DEFAULT_SCORE_WEIGHTS,
+  rebalanceWeights,
+  type RankingWeights,
+} from "@/lib/airsearcher/config/ranking";
 import { MIN_GATHER_BUFFER_MINUTES } from "@/lib/airsearcher/config/constants";
 import { EUROPE_CITIES_BY_ID } from "@/data/europeCities";
 import { airportByCode, searchPlaces } from "@/data/places";
 import {
   destinationsOf,
+  journeyFlights,
   mergedDestinations,
   stopAirportsOf,
   type Arrangement,
@@ -102,6 +116,38 @@ check("priceIndex scores everything 1 when all prices match", () => {
   assert.equal(priceIndex(null, 100, 300), 0);
   assert.equal(priceIndex(100, 100, 300), 1);
   assert.equal(priceIndex(300, 100, 300), 0);
+});
+
+check("a section resets on its own, scope included, and leaves the rest", () => {
+  assert.equal(anyGroupChanged(DEFAULT_FILTERS), false);
+  const changed = {
+    ...DEFAULT_FILTERS,
+    stops: ["1" as const],
+    scopes: { ...DEFAULT_FILTERS.scopes, stops: "going" as const },
+    travelClass: "business" as const,
+  };
+  assert.equal(groupChanged(changed, "stops"), true);
+  assert.equal(groupChanged(changed, "price"), false);
+  const reset = resetGroup(changed, "stops");
+  assert.deepEqual(reset.stops, []);
+  assert.equal(reset.scopes.stops, "both");
+  assert.equal(reset.travelClass, "business", "other sections stay");
+  assert.equal(anyGroupChanged(reset), true);
+  assert.equal(anyGroupChanged(resetGroup(reset, "cabin")), false);
+  // A scope alone counts as a change to reset.
+  assert.equal(groupChanged({ ...DEFAULT_FILTERS, scopes: { ...DEFAULT_FILTERS.scopes, cabin: "going" } }, "cabin"), true);
+});
+
+check("moving one score weight shares the rest in proportion, always 100 in all", () => {
+  const sum = (w: RankingWeights) => w.stops + w.price + w.hour;
+  assert.deepEqual(DEFAULT_SCORE_WEIGHTS, { stops: 40, price: 30, hour: 30 });
+  assert.deepEqual(rebalanceWeights(DEFAULT_SCORE_WEIGHTS, "stops", 70), { stops: 70, price: 15, hour: 15 });
+  assert.deepEqual(rebalanceWeights({ stops: 50, price: 40, hour: 10 }, "hour", 30), { stops: 39, price: 31, hour: 30 });
+  assert.deepEqual(rebalanceWeights({ stops: 100, price: 0, hour: 0 }, "stops", 60), { stops: 60, price: 20, hour: 20 });
+  assert.deepEqual(rebalanceWeights(DEFAULT_SCORE_WEIGHTS, "price", 100), { stops: 0, price: 100, hour: 0 });
+  for (let v = 0; v <= 100; v += 7) {
+    assert.equal(sum(rebalanceWeights({ stops: 33, price: 33, hour: 34 }, "price", v)), 100);
+  }
 });
 
 check("normalizeWeights splits evenly rather than dividing by zero", () => {
@@ -641,7 +687,7 @@ check("scoreArrangements weights hours by passenger count", () => {
 
   const scored = scoreArrangements(
     base,
-    { price: 0, hour: 100 },
+    { stops: 0, price: 0, hour: 100 },
     DEFAULT_RANKING_CONFIG,
   );
   for (const arrangement of scored) {
@@ -661,8 +707,8 @@ check("a priority date lifts a score without overriding a much better one", () =
     allow: { direct: true, gather: true },
   });
 
-  const plain = scoreArrangements(base, { price: 60, hour: 40 }, DEFAULT_RANKING_CONFIG);
-  const boosted = scoreArrangements(base, { price: 60, hour: 40 }, DEFAULT_RANKING_CONFIG, {
+  const plain = scoreArrangements(base, DEFAULT_SCORE_WEIGHTS, DEFAULT_RANKING_CONFIG);
+  const boosted = scoreArrangements(base, DEFAULT_SCORE_WEIGHTS, DEFAULT_RANKING_CONFIG, {
     "2026-09-14": 3,
   });
 
@@ -731,6 +777,22 @@ function londonArrangements(pool: FlightPool, returnDate: string | null = BACK) 
     allow: { direct: true, gather: true },
   });
 }
+
+check("seen one way, round-trip results keep only their way out, each once", () => {
+  const roundTrip = londonArrangements(londonPool());
+  assert.ok(roundTrip.every((a) => a.returnDate !== null && a.legs.every((leg) => leg.return)));
+  const oneWay = asOneWay(roundTrip);
+  assert.ok(oneWay.length > 0);
+  assert.ok(oneWay.every((a) => a.returnDate === null && a.legs.every((leg) => leg.return === null)));
+  const outbound = (a: Arrangement) =>
+    a.legs.map((leg) => journeyFlights(leg.outbound).map((f) => f.id).join("+")).join("|");
+  assert.equal(new Set(oneWay.map(outbound)).size, oneWay.length, "each way out once");
+  for (const a of oneWay) {
+    const going = a.legs.reduce((sum, leg) => sum + pricePerHeadOf(leg) * leg.passengers, 0);
+    assert.equal(a.totals.totalPrice, Math.round(going), "priced without the way back");
+  }
+  assert.equal(asOneWay(oneWay).length, oneWay.length, "already one way stays as it is");
+});
 
 check("a group with no way home rules the arrangement out", () => {
   // No STN -> SKG: SKG flying direct could not get back, so only via ATH is left.
@@ -831,21 +893,37 @@ check("a stop inside a ticket and a stop between tickets count the same", () => 
   for (const going of [combined, ticket]) {
     const set = { going, returning: [] };
     assert.equal(journeyStopCount(going), 1);
-    assert.equal(matchesStops(set, ["non-stop"]), false, "non-stop rules both out");
-    assert.equal(matchesStops(set, ["1"]), true);
+    assert.equal(matchesStops([set], ["non-stop"]), false, "non-stop rules both out");
+    assert.equal(matchesStops([set], ["1"]), true);
     assert.deepEqual(connectingAirports(set), ["ATH"]);
     assert.equal(matchesLayover(set, [0, 120]), false, "the 3h wait is judged either way");
     assert.equal(matchesLayover(set, [0, 240]), true);
   }
 });
 
-check("results without stops rank well above cheaper ones with stops", () => {
+check("a result's stops are its group with the most, so each result has one count", () => {
+  const direct = { going: [flight("ATH", "STN", `${OUT} 09:00`, `${OUT} 12:00`, 90)], returning: [] };
+  const oneStop = {
+    going: [
+      flight("SKG", "ATH", `${OUT} 06:00`, `${OUT} 07:00`, 30),
+      flight("ATH", "STN", `${OUT} 09:00`, `${OUT} 12:00`, 90),
+    ],
+    returning: [],
+  };
+  const mixed = [direct, oneStop];
+  assert.equal(stopsOf(mixed), 1);
+  assert.equal(matchesStops(mixed, ["1"]), true, "counted under 1 stop");
+  assert.equal(matchesStops(mixed, ["non-stop"]), false, "not under non-stop");
+  assert.equal(matchesStops(mixed, ["non-stop", "1"]), true);
+});
+
+check("weighted above price, results without stops outrank cheaper ones with stops", () => {
   const pool = londonPool();
   // SKG direct is now far dearer than going via ATH.
   pool[poolKey("SKG", "STN", OUT)] = [flight("SKG", "STN", `${OUT} 09:00`, `${OUT} 12:00`, 500)];
   const scored = scoreArrangements(
     londonArrangements(pool, null),
-    { price: 100, hour: 0 },
+    { stops: 60, price: 40, hour: 0 },
     DEFAULT_RANKING_CONFIG,
   );
   const byRouting = (routing: string) =>
