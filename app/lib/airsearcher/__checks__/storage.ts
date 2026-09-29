@@ -14,7 +14,8 @@ import path from "node:path";
 import { STORAGE_MAX_VALUE_CHARS } from "@/lib/airsearcher/config/storage";
 import { FILTERS_KEY, PREFS_KEY, SEARCHES_KEY } from "@/lib/airsearcher/db/keys";
 import { getValues, importOnce, isImported, openDb, setValue } from "@/lib/airsearcher/db/sqlite";
-import { loadFilters, loadSearches } from "@/lib/airsearcher/storage";
+import { loadFilters, loadSearches, pruneOutdatedResults } from "@/lib/airsearcher/storage";
+import { asCurlError, CurlError } from "@/lib/airsearcher/curl/errors";
 import {
   flushStorage,
   getItem,
@@ -203,6 +204,40 @@ async function main() {
     assert.equal(storageError(), true);
     assert.deepEqual(loadSearches(), []);
     assert.equal(setItem(SEARCHES_KEY, "[]"), false);
+  });
+
+  await check("outdated searches keep their card; only their results are removed", async () => {
+    const now = Date.parse("2026-09-29T12:00:00Z");
+    const query = { destinations: [{ cityId: "uk-london", airports: ["LHR"] }], origins: [] };
+    const result = { arrangements: [{ id: "a", legs: [] }], records: [{ id: "r" }], priceGrid: { x: 1 } };
+    const fresh = { id: "fresh", savedAt: "2026-09-29T09:00:00Z", label: "London · fresh", key: "k1", query, ...result };
+    const old = {
+      id: "old", savedAt: "2026-09-27T09:00:00Z", label: "London · old", key: "k2", query, kind: "google-curl",
+      arrangements: [], googleCurl: { arrangements: [{ id: "g" }], records: [{ id: "r" }], requests: [{ label: "x", flights: 3 }] },
+    };
+    resetStorageClientForChecks({ [SEARCHES_KEY]: JSON.stringify([fresh, old]) });
+    fakeWindow();
+    const server = fakeServer();
+    assert.equal(pruneOutdatedResults(now), 1);
+    assert.equal(pruneOutdatedResults(now), 0, "an already cleaned search is left alone");
+    const [a, b] = loadSearches();
+    assert.equal(a.id, "fresh");
+    assert.equal(a.arrangements.length, 1);
+    assert.equal(b.id, "old");
+    assert.equal(b.label, "London · old");
+    assert.equal(b.resultsRemoved, true);
+    assert.deepEqual(b.googleCurl?.arrangements, []);
+    assert.equal(b.googleCurl?.records, undefined);
+    assert.equal(b.googleCurl?.requests?.length, 1);
+    assert.equal(await flushStorage(), true);
+    assert.ok(server.values[SEARCHES_KEY]!.includes('"resultsRemoved":true'));
+  });
+
+  await check("a CurlError from before a hot reload is still recognised by its code", () => {
+    const stale = Object.assign(new Error("limit"), { name: "CurlError", code: "cooling_down" });
+    assert.equal(asCurlError(stale)?.code, "cooling_down");
+    assert.equal(asCurlError(new CurlError("timeout", "t"))?.code, "timeout");
+    assert.equal(asCurlError(new Error("other")), null);
   });
 
   resetStorageClientForChecks(null);

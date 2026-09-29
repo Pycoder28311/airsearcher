@@ -115,9 +115,13 @@ export default function SearchHistoryCard({
       />
       <Text
         size="very small"
-        value={`${arrangements.length} result${arrangements.length === 1 ? "" : "s"}${
-          cheapest !== null ? ` · from ${cheapest} ${CURRENCY}` : ""
-        }`}
+        value={
+          entry.resultsRemoved
+            ? "Results removed · older than a day"
+            : `${arrangements.length} result${arrangements.length === 1 ? "" : "s"}${
+                cheapest !== null ? ` · from ${cheapest} ${CURRENCY}` : ""
+              }`
+        }
         className="text-gray-500"
       />
 

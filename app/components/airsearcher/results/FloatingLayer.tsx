@@ -41,6 +41,7 @@ export default function FloatingLayer({
             key={id}
             arrangement={arrangement}
             cheapestPrice={cheapestPrice}
+            compareWith={arrangements}
             box={box}
             onMove={(x, y) => onMove(id, x, y)}
             onResize={(width, height) => onResize(id, width, height)}

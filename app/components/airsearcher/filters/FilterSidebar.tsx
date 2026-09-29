@@ -34,6 +34,7 @@ import AvoidAirportsGroup from "./groups/AvoidAirportsGroup";
 import DepartureAirportsGroup from "./groups/DepartureAirportsGroup";
 import HourPreferencesGroup from "./groups/HourPreferencesGroup";
 import TimesGroup from "./groups/TimesGroup";
+import { pricePerHeadOf } from "@/lib/airsearcher/grouping";
 
 /**
  * The filter sidebar.
@@ -73,7 +74,8 @@ export default function FilterSidebar({
   const airlines = useMemo(() => airlinesIn(arrangements), [arrangements]);
   const connections = useMemo(() => connectingAirportsIn(arrangements), [arrangements]);
   const prices = useMemo(
-    () => arrangements.map((a) => a.totals.totalPrice),
+    // Every group's per-passenger price, which is what the price range filters on.
+    () => arrangements.flatMap((a) => a.legs.map((leg) => Math.round(pricePerHeadOf(leg)))),
     [arrangements],
   );
   const knownAirports = useMemo(

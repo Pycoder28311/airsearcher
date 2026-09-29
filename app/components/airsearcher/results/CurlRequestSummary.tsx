@@ -8,6 +8,7 @@ import type { CurlRequestCount } from "@/lib/airsearcher/storage";
  * How many flights each Google request of a cURL run read, and the total.
  * The same flight often comes back from several requests (the first page is
  * part of "view more"), so the flights kept after merging are shown too.
+ * A plain panel: the results page's "Show info" button decides whether it shows.
  */
 export default function CurlRequestSummary({
   requests,
@@ -19,8 +20,8 @@ export default function CurlRequestSummary({
   const total = requests.reduce((sum, request) => sum + request.flights, 0);
 
   return (
-    <details open className={`${border} ${radius} ${grayLight.bg} px-3 py-2`}>
-      <summary className="cursor-pointer">
+    <div className={`${border} ${radius} ${grayLight.bg} px-3 py-2`}>
+      <div>
         <Text
           size="small"
           icon="info"
@@ -29,7 +30,7 @@ export default function CurlRequestSummary({
           }`}
           className="text-gray-700"
         />
-      </summary>
+      </div>
       <ol className={`mt-2 flex flex-col border-t ${grayMid.border} pt-2`}>
         {requests.map((request, index) => (
           <li key={`${index}-${request.label}`} className="flex flex-wrap items-baseline justify-between gap-x-4 py-0.5">
@@ -46,6 +47,6 @@ export default function CurlRequestSummary({
           <Text size="very small" value={`${total} flights`} className="tabular-nums font-semibold text-gray-800" />
         </li>
       </ol>
-    </details>
+    </div>
   );
 }

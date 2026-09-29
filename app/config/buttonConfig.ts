@@ -28,13 +28,12 @@ export type VariantStyle = {
 };
 
 export const variantStyles: Record<ButtonVariant, VariantStyle> = {
-  // Cartoonish button: a solid bottom shadow gives it depth, and on click it
-  // drops down (translate-y) while the shadow collapses, so it looks pressed.
+  // Flat solid button: darker on hover and while pressed.
   primary: {
-    base: `${colorMain.bg} text-white shadow-[0_4px_0_0_#1d4ed8] ${colorMain.ring}`,
+    base: `${colorMain.bg} text-white ${colorMain.ring}`,
     hover: colorMain.bgHover,
-    active: "active:translate-y-1 active:shadow-[0_0_0_0_#1d4ed8]",
-    disabled: "disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0",
+    active: colorMain.bgActive,
+    disabled: "disabled:opacity-50 disabled:cursor-not-allowed",
   },
   // Solid colored-fill button.
   secondary: {

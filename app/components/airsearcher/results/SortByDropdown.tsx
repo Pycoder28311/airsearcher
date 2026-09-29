@@ -5,7 +5,6 @@ import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { useAbsoluteModal } from "@/framework/ui/context/AppContext";
 import { colorMain, grayLight } from "@/config/theme";
-import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import type { ArrangementSortMode } from "@/lib/airsearcher/grouping";
 import Panel from "../common/Panel";
 
@@ -29,12 +28,15 @@ const POSITION = { side: "bottom", align: "end", offset: 6 } as const;
 export default function SortByDropdown({
   value,
   onChange,
-  cheapestPrice,
+  cheapestLabel,
 }: {
   value: ArrangementSortMode;
   onChange: (next: ArrangementSortMode) => void;
-  /** Cheapest total among the results that survive the current filters. */
-  cheapestPrice: number | null;
+  /**
+   * The cheapest surviving result, as its cheapest–priciest group per
+   * passenger (e.g. "188–292 €"); null when nothing survives the filters.
+   */
+  cheapestLabel: string | null;
 }) {
   const modal = useAbsoluteModal<HTMLButtonElement>();
   const current = OPTIONS.find((option) => option.value === value) ?? OPTIONS[0];
@@ -58,11 +60,11 @@ export default function SortByDropdown({
               value={option.label}
               className={selected ? colorMain.text : "text-gray-800"}
             />
-            {option.value === "price" && cheapestPrice !== null && (
+            {option.value === "price" && cheapestLabel !== null && (
               <Text
                 size="very small"
-                value={`${cheapestPrice} ${CURRENCY}`}
-                className="tabular-nums text-gray-500"
+                value={cheapestLabel}
+                className="whitespace-nowrap tabular-nums text-gray-500"
               />
             )}
           </Button>
@@ -76,7 +78,7 @@ export default function SortByDropdown({
   useEffect(() => {
     if (modal.isOpen) modal.open({ component: panel, ...POSITION });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, cheapestPrice]);
+  }, [value, cheapestLabel]);
 
   return (
     <Button

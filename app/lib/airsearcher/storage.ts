@@ -83,6 +83,12 @@ export interface StoredSearch {
    */
   kind?: "google-curl";
   /**
+   * Set once the results were removed because the search was outdated (older
+   * than RESULT_FRESHNESS_MS). The entry itself — query, dates, label — stays
+   * in the history; only arrangements, raw flights and price grids go.
+   */
+  resultsRemoved?: boolean;
+  /**
    * Flights from pasted Google Flights cURLs, built by the same pipeline.
    * Flight data only — the cURLs themselves hold the user's session and are
    * never stored.
@@ -243,7 +249,10 @@ export function loadSearches(): StoredSearch[] {
  * always survive, because they are what the results page needs.
  */
 export function saveSearch(entry: StoredSearch): void {
-  const existing = loadSearches().filter((e) => e.id !== entry.id);
+  const now = Date.now();
+  const existing = loadSearches()
+    .filter((e) => e.id !== entry.id)
+    .map((e) => (isStale(e, now) ? withoutResults(e) : e));
   const next = [entry, ...existing].slice(0, MAX_SAVED_SEARCHES);
 
   if (writeJson(SEARCHES_KEY, next)) return;
@@ -264,6 +273,45 @@ function withoutRecords(entry: StoredSearch): StoredSearch {
     travelpayouts: entry.travelpayouts && { ...entry.travelpayouts, records: undefined },
     googleCurl: entry.googleCurl && { ...entry.googleCurl, records: undefined },
   };
+}
+
+/**
+ * An outdated entry reduced to what the history card needs: its query, dates
+ * and label stay; every result goes. The request summary is a few numbers, so
+ * it stays too.
+ */
+function withoutResults(entry: StoredSearch): StoredSearch {
+  if (entry.resultsRemoved) return entry;
+  return {
+    ...entry,
+    arrangements: [],
+    records: undefined,
+    priceGrid: undefined,
+    travelpayouts: entry.travelpayouts && { arrangements: [], error: entry.travelpayouts.error },
+    googleCurl: entry.googleCurl && {
+      arrangements: [],
+      requests: entry.googleCurl.requests,
+      uniqueFlights: entry.googleCurl.uniqueFlights,
+      warnings: entry.googleCurl.warnings,
+    },
+    resultsRemoved: true,
+  };
+}
+
+/**
+ * Removes the results of every outdated search, keeping the entries. Called
+ * when the home page opens; saving a search does the same for the others.
+ * Returns how many searches were cleaned (0 when nothing had to change).
+ */
+export function pruneOutdatedResults(now: number = Date.now()): number {
+  const all = loadSearches();
+  const outdated = all.filter((entry) => isStale(entry, now) && !entry.resultsRemoved);
+  if (outdated.length === 0) return 0;
+  const written = writeJson(
+    SEARCHES_KEY,
+    all.map((entry) => (outdated.includes(entry) ? withoutResults(entry) : entry)),
+  );
+  return written ? outdated.length : 0;
 }
 
 export function removeSearch(id: string): void {

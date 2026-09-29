@@ -6,14 +6,18 @@
  * complete plan for the whole group, and scores it.
  *
  * The scoring arithmetic is NOT reinvented — `priceIndex`, `legHourIndex` and
- * `normalizeWeights` come from `ranking.ts` unchanged. The only addition is a
- * passenger-weighted mean across the origin groups.
+ * `normalizeWeights` come from `ranking.ts` unchanged. The additions are a
+ * passenger-weighted mean across the origin groups, and a stop index that
+ * counts a change between tickets the same as one inside a ticket.
  */
 
 import {
   DATE_PRIORITY_BONUS,
   MIN_GATHER_BUFFER_MINUTES,
+  STOP_SCORES,
+  STOP_WEIGHT,
 } from "@/lib/airsearcher/config/constants";
+import { journeyAsLeg, journeyMinutes, journeyStopCount } from "@/lib/airsearcher/journeyStops";
 import type {
   RankingPreferences,
   RankingWeights,
@@ -158,6 +162,20 @@ export function uniqueFlights(flights: NormalizedFlight[]): NormalizedFlight[] {
 }
 
 /**
+ * Whether every group can get home: on a round trip each has a way back, and
+ * a group coming back through the hub has its feeder home. The hub's own group
+ * needs no feeder. One-way arrangements always pass.
+ */
+export function everyoneGetsHome(arrangement: Arrangement): boolean {
+  if (arrangement.returnDate === null) return true;
+  return arrangement.legs.every(
+    (leg) =>
+      leg.return !== null &&
+      (leg.return.routing !== "gather" || leg.origin === arrangement.gatheringAirport || leg.return.feeder !== null),
+  );
+}
+
+/**
  * One copy of each arrangement that flies the same segments for every group.
  * The same two flights can be one ticket with a stop or two separate tickets
  * via the hub; only the cheaper is kept, the single ticket on a tie.
@@ -236,19 +254,35 @@ export function pricePerHeadOf(leg: GroupLeg): number {
   return legFlights(leg).reduce((sum, flight) => sum + (flight.price ?? 0), 0);
 }
 
-/** Door-to-destination minutes for a group's way out, feeder wait included. */
-function travelMinutesOf(leg: GroupLeg): number {
-  const span = minutesBetweenTimes(
-    journeyDeparture(leg.outbound),
-    journeyArrival(leg.outbound),
-  );
-  if (span !== null && span > 0) return span;
+/** Cheapest and priciest per-passenger price across a result's groups. */
+export interface PriceRange {
+  min: number;
+  max: number;
+}
 
-  // Fall back to the flights' own durations when the clock times are unusable.
-  return journeyFlights(leg.outbound).reduce(
-    (sum, flight) => sum + (flight.outbound.totalDurationMinutes ?? 0),
-    0,
-  );
+/**
+ * What the cheapest group and the priciest group each pay per passenger, both
+ * directions and every ticket of a stop included — shown instead of the sum
+ * over everyone, which no single traveller pays.
+ */
+export function groupPriceRange(arrangement: Arrangement): PriceRange {
+  const prices = arrangement.legs.map(pricePerHeadOf);
+  if (prices.length === 0) return { min: 0, max: 0 };
+  return { min: Math.round(Math.min(...prices)), max: Math.round(Math.max(...prices)) };
+}
+
+/** "188–292", or one number when every group pays the same. */
+export function formatPriceRange(range: PriceRange, currency?: string): string {
+  const numbers = range.min === range.max ? `${range.min}` : `${range.min}–${range.max}`;
+  return currency ? `${numbers} ${currency}` : numbers;
+}
+
+/**
+ * Door-to-destination minutes for a group's way out, feeder wait included —
+ * flying times plus waits, so a time-zone change does not shorten it.
+ */
+function travelMinutesOf(leg: GroupLeg): number {
+  return journeyMinutes(journeyFlights(leg.outbound)) ?? 0;
 }
 
 function totalsOf(legs: GroupLeg[], gatheringAirport: AirportCode): ArrangementTotals {
@@ -365,9 +399,9 @@ function shortHash(value: string): string {
  *
  * Everyone who gathers shares one hub flight each way, and so does the hub's
  * own group. A way out that cannot be flown — no flights, or a feeder that does
- * not connect — produces nothing. The way back is best-effort: a group with no
- * return flights keeps a null return, and return hops are not checked for
- * connection.
+ * not connect — produces nothing. On a round trip the same holds for the way
+ * back: every group must get home, so a group with no flight back, or landing
+ * at the hub with no feeder home that connects, drops the arrangement.
  */
 export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
   if (args.sameAirline) return buildSameAirlineArrangements(args);
@@ -424,15 +458,15 @@ export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
             if (airport === hub && gathering) options = mainBack ? [direct("return", mainBack)] : [];
             else if (!gathers) options = topFlights(pool[poolKey(dest, airport, returnDate)]).map((f) => direct("return", f));
             else if (mainBack) {
-              const feeders = topFlights(pool[poolKey(hub, airport, returnDate)]);
-              options = (feeders.length > 0 ? feeders : [null]).map((feeder) => ({
-                direction: "return",
-                routing: "gather",
-                feeder,
-                main: mainBack,
-              }));
+              // Coming back the main flight lands first; a feeder leaving too
+              // soon after it cannot be caught.
+              options = topFlights(pool[poolKey(hub, airport, returnDate)])
+                .filter((feeder) => flightsConnect(mainBack, feeder))
+                .map((feeder) => ({ direction: "return", routing: "gather", feeder, main: mainBack }));
             } else options = [];
-            if (options.length > 0) backsFor = options;
+            // A group that cannot get home rules the arrangement out.
+            if (options.length === 0) return [];
+            backsFor = options;
           }
 
           return outs.flatMap((outbound) =>
@@ -479,7 +513,7 @@ export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
             legs,
             totals: totalsOf(legs, hub),
             score: 0,
-            indices: { price: 0, hour: null },
+            indices: { price: 0, hour: null, stops: 0 },
           });
         }
       }
@@ -513,12 +547,13 @@ function groupHourIndex(
   for (const leg of legs) {
     const values: number[] = [];
 
+    // Each direction is judged as one journey — first take-off, last landing —
+    // so a change of plane scores the same inside a ticket or between two.
     for (const journey of leg.return ? [leg.outbound, leg.return] : [leg.outbound]) {
       const curve = journey.direction === "outbound" ? curves.outbound : curves.return;
-      for (const flight of journeyFlights(journey)) {
-        const value = legHourIndex(flight.outbound, curve, departureArrivalRatio);
-        if (value !== null) values.push(value);
-      }
+      const whole = journeyAsLeg(journeyFlights(journey));
+      const value = whole ? legHourIndex(whole, curve, departureArrivalRatio) : null;
+      if (value !== null) values.push(value);
     }
 
     if (values.length === 0) continue;
@@ -531,12 +566,34 @@ function groupHourIndex(
 }
 
 /**
+ * How close the group is to flying non-stop, before comparing with the other
+ * results: each journey scored by `STOP_SCORES` and weighted by the passengers
+ * on it. 1 is everyone non-stop both ways.
+ */
+function groupStopQuality(legs: GroupLeg[]): number {
+  let weighted = 0;
+  let weight = 0;
+
+  for (const leg of legs) {
+    const journeys = leg.return ? [leg.outbound, leg.return] : [leg.outbound];
+    for (const journey of journeys) {
+      const stops = journeyStopCount(journeyFlights(journey));
+      weighted += (STOP_SCORES[stops] ?? 0) * leg.passengers;
+      weight += leg.passengers;
+    }
+  }
+
+  return weight > 0 ? weighted / weight : 1;
+}
+
+/**
  * Scores every arrangement relative to the others.
  *
  * `priceIndex` is relative to the current set, exactly as in the reference
  * project: filtering something out legitimately changes everyone's score.
- * Priority dates add a small bonus so a favoured date wins between near-equal
- * options without dragging a clearly worse one to the top.
+ * Flying without stops takes `STOP_WEIGHT` of the score and price and hours
+ * share the rest. Priority dates add a small bonus so a favoured date wins
+ * between near-equal options without dragging a clearly worse one to the top.
  */
 export function scoreArrangements(
   arrangements: Arrangement[],
@@ -550,9 +607,16 @@ export function scoreArrangements(
 
   const base = normalizeWeights(weights);
 
-  return arrangements.map((arrangement) => {
+  // Like price, stops are judged against the rest of the set: the fewest stops
+  // here score 1 and the most 0, so a stop always costs a lot of score.
+  const quality = arrangements.map((a) => groupStopQuality(a.legs));
+  const best = quality.length > 0 ? Math.max(...quality) : 1;
+  const worst = quality.length > 0 ? Math.min(...quality) : 1;
+
+  return arrangements.map((arrangement, i) => {
     const hourIndex = groupHourIndex(arrangement.legs, preferences);
     const price = priceIndex(arrangement.totals.totalPrice, min, max);
+    const stops = best > worst ? (quality[i] - worst) / (best - worst) : 1;
 
     // With no usable hour index the hour term would read as zero convenience,
     // which is a lie. Drop it and give price the full weight.
@@ -561,13 +625,19 @@ export function scoreArrangements(
     const priority = priorityDates[arrangement.departureDate] ?? 0;
     const bonus = Math.max(0, Math.min(3, priority)) * DATE_PRIORITY_BONUS;
 
+    const applied = {
+      stops: STOP_WEIGHT,
+      price: (1 - STOP_WEIGHT) * effective.price,
+      hour: (1 - STOP_WEIGHT) * effective.hour,
+    };
     const score =
-      price * effective.price + (hourIndex ?? 0) * effective.hour + bonus;
+      stops * applied.stops + price * applied.price + (hourIndex ?? 0) * applied.hour + bonus;
 
     return {
       ...arrangement,
       score: Math.min(score, 1),
-      indices: { price, hour: hourIndex },
+      indices: { price, hour: hourIndex, stops },
+      breakdown: { weights: applied, bonus },
     };
   });
 }

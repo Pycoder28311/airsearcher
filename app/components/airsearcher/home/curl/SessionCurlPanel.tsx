@@ -5,16 +5,12 @@ import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { useApp } from "@/framework/ui/context/AppContext";
 import { colorRed, colorSecondary, grayLight, grayMid, radius } from "@/config/theme";
-import {
-  CURL_JITTER_MS,
-  CURL_MAX_PER_RUN,
-  CURL_MIN_INTERVAL_MS,
-} from "@/lib/airsearcher/config/curl";
+import { CURL_MAX_PER_RUN } from "@/lib/airsearcher/config/curl";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import { destinationsOf, type SearchQuery } from "@/lib/airsearcher/types";
 import InfoHint from "../../common/InfoHint";
 import { dateError } from "../DateField";
-import { curlTextareaClass, RunStatus } from "./CurlRow";
+import { RunStatus } from "./CurlRow";
 import { useSessionRun } from "./useSessionRun";
 
 /** What stops the top inputs from making a search — same rules as SearchPanel. */
@@ -29,8 +25,8 @@ function inputsError(query: SearchQuery): string | null {
   );
 }
 
-const SESSION_HELP =
-  "Open any Google Flights search with DevTools on the Network tab, right-click the newest GetShoppingResults request → Copy Value → Copy as cURL, and paste it here. Every search this trip needs is built from the inputs above and sent one at a time, at least 10 s apart. The cURL is never saved.";
+const BROWSER_HELP =
+  "Each search the trip needs is opened on Google Flights in a hidden browser on this computer, which clicks “View more flights” and reads the full list. Searches run one at a time, 5–12 s apart, with a few longer pauses of 20–90 s at random; the browser is never signed in to Google."
 
 /** "1:05" — minutes and seconds. */
 function clockOf(ms: number): string {
@@ -38,23 +34,39 @@ function clockOf(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-/** Time since the run started, ticking while it runs and frozen once it ends. */
-function Elapsed({ startedAt, finishedAt }: { startedAt: number; finishedAt: number | null }) {
+/**
+ * The time line above the list: the planned total before a run, elapsed
+ * against that total while it runs (ticking every second), and how long the
+ * last run took once it ends.
+ */
+function RunTime({
+  startedAt,
+  finishedAt,
+  running,
+  totalMs,
+  pauses,
+}: {
+  startedAt: number | null;
+  finishedAt: number | null;
+  running: boolean;
+  totalMs: number;
+  pauses: number;
+}) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (finishedAt !== null) return;
+    if (!running) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [finishedAt]);
-  const ms = (finishedAt ?? now) - startedAt;
-  return (
-    <Text
-      size="very small"
-      icon="clock"
-      value={`${finishedAt === null ? "Elapsed" : "Took"} ${clockOf(ms)}`}
-      className="tabular-nums text-gray-600"
-    />
-  );
+  }, [running]);
+
+  const planned = `~${clockOf(totalMs)} total${pauses > 0 ? ` · ${pauses} longer pause${pauses === 1 ? "" : "s"}` : ""}`;
+  const value =
+    running && startedAt !== null
+      ? `Elapsed ${clockOf(now - startedAt)} of ${planned}`
+      : startedAt !== null && finishedAt !== null
+        ? `Last run took ${clockOf(finishedAt - startedAt)} · next: ${planned}`
+        : `Planned: ${planned}`;
+  return <Text size="very small" icon="clock" value={value} className="tabular-nums text-gray-600" />;
 }
 
 /** Row background by status: finished rows stand out, failed ones in red. */
@@ -65,9 +77,9 @@ function rowTone(kind: string | undefined): string {
   return "";
 }
 
-/** "~2 min" for n requests: the first goes at once, each next one after the gap. */
-function durationOf(requests: number): string {
-  const seconds = Math.max(0, requests - 1) * ((CURL_MIN_INTERVAL_MS + CURL_JITTER_MS / 2) / 1000);
+/** "~45 s" or "~7 min" for a run's expected length. */
+function durationOf(ms: number): string {
+  const seconds = ms / 1000;
   return seconds < 60 ? `~${Math.max(5, Math.round(seconds))} s` : `~${Math.ceil(seconds / 60)} min`;
 }
 
@@ -113,14 +125,10 @@ export default function SessionCurlPanel({
   const inputs = inputsError(query);
   const count = session.jobs.length;
   const blocked =
-    session.check.kind === "invalid"
-      ? session.check.message
-      : session.check.kind === "empty"
-        ? null
-        : inputs ??
-          (session.tooMany
-            ? `This trip needs ${count} requests; the limit is ${CURL_MAX_PER_RUN}. Narrow the date range.`
-            : null);
+    inputs ??
+    (session.tooMany
+      ? `This trip needs ${count} searches; the limit is ${CURL_MAX_PER_RUN}. Narrow the date range.`
+      : null);
 
   const start = () => {
     if (count <= 1) return void session.run();
@@ -128,7 +136,9 @@ export default function SessionCurlPanel({
       <div className="flex flex-col gap-4">
         <Text
           size="small"
-          value={`This search will send ${count} requests to Google Flights, one at a time, taking ${durationOf(count)}.`}
+          value={`This will run ${count} Google Flights searches, one at a time, taking ${durationOf(session.totalMs)}${
+            session.pauses > 0 ? `, with ${session.pauses} longer pause${session.pauses === 1 ? "" : "s"}` : ""
+          }.`}
           className="text-gray-700"
         />
         <div className="flex flex-col gap-1">
@@ -167,45 +177,33 @@ export default function SessionCurlPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className={`flex flex-col gap-2 ${grayLight.bg} ${radius} p-3`}>
+      <div className="flex flex-col gap-1">
         <div className="flex items-center gap-1">
-          <Text size="small" value="Session cURL" className="font-medium text-gray-800" />
-          <InfoHint text={SESSION_HELP} label="How to copy the session cURL" />
+          <Text size="small" value="Google Flights" className="font-medium text-gray-800" />
+          <InfoHint text={BROWSER_HELP} label="How Google Flights is searched" />
         </div>
-        <textarea
-          value={session.text}
-          onChange={(event) => session.edit(event.target.value)}
-          readOnly={session.running}
-          rows={4}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder="Paste any Google Flights GetShoppingResults request copied as cURL."
-          aria-label="Session cURL"
-          className={curlTextareaClass(session.check.kind === "invalid", session.running)}
-        />
-        {session.check.kind === "empty" && (
-          <Text
-            size="very small"
-            value="Any search works — airports, dates and passengers come from the inputs above. Its cookies are removed, so the searches are sent without your Google login."
-            className="text-gray-400"
-          />
-        )}
-        {blocked && <Text size="very small" icon="alert" value={blocked} className={colorRed.text} />}
-        {session.check.kind === "valid" && !blocked && (
-          <Text
-            size="very small"
-            icon="check"
-            value={`Session ready · this trip needs ${count} Google request${count === 1 ? "" : "s"} (${durationOf(count)})`}
-            className="text-gray-700"
-          />
+        {blocked ? (
+          <Text size="very small" icon="alert" value={blocked} className={colorRed.text} />
+        ) : (
+          count > 0 && (
+            <Text
+              size="very small"
+              value={`This trip needs ${count} search${count === 1 ? "" : "es"} (${durationOf(session.totalMs)})`}
+              className="text-gray-500"
+            />
+          )
         )}
       </div>
 
       {count > 0 && !session.tooMany && (
         <div className="flex flex-col gap-1.5">
-          {session.startedAt !== null && (
-            <Elapsed startedAt={session.startedAt} finishedAt={session.finishedAt} />
-          )}
+          <RunTime
+            startedAt={session.startedAt}
+            finishedAt={session.finishedAt}
+            running={session.running}
+            totalMs={session.totalMs}
+            pauses={session.pauses}
+          />
           <ul
             ref={listRef}
             className={`relative flex max-h-72 flex-col gap-0.5 overflow-y-auto border ${grayMid.border} ${radius} bg-white p-1`}
@@ -242,7 +240,7 @@ export default function SessionCurlPanel({
         )}
         <Button
           styleType="primary"
-          disabled={session.running || disabled || session.check.kind !== "valid" || blocked !== null}
+          disabled={session.running || disabled || count === 0 || blocked !== null}
           onClick={start}
         >
           <Text size="small" icon="search" value={session.running ? "Searching…" : "Search with Google"} />

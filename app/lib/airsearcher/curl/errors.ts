@@ -18,6 +18,7 @@ export type CurlErrorCode =
   | "template_unrecognised"
   | "too_many"
   | "curl_missing"
+  | "browser_missing"
   | "network"
   | "timeout"
   | "too_large"
@@ -39,6 +40,7 @@ export interface CurlErrorInfo {
 /** Codes where continuing with the next cURL is pointless or harmful. */
 const STOPS_RUN: ReadonlySet<CurlErrorCode> = new Set([
   "curl_missing",
+  "browser_missing",
   "network",
   "session_expired",
   "rate_limited",
@@ -63,4 +65,19 @@ export class CurlError extends Error {
 
 export function errorInfo(code: CurlErrorCode, message: string): CurlErrorInfo {
   return new CurlError(code, message).toInfo();
+}
+
+/**
+ * Whether `value` is a CurlError, by its name and code rather than its class.
+ * A dev-server hot reload makes a fresh CurlError class, while objects kept
+ * across reloads (the pacing gate) still throw the old one; `instanceof`
+ * would then miss them and turn a clear error into an "unexpected" one.
+ */
+export function asCurlError(value: unknown): CurlError | null {
+  if (value instanceof CurlError) return value;
+  const candidate = value as { name?: unknown; code?: unknown; message?: unknown } | null;
+  if (candidate?.name === "CurlError" && typeof candidate.code === "string") {
+    return new CurlError(candidate.code as CurlErrorCode, String(candidate.message ?? ""));
+  }
+  return null;
 }

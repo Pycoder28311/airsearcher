@@ -34,7 +34,7 @@ export const CURL_TIMEOUT_MS = 30_000;
  * session cURL (each search is two: first page and view more). A guard against
  * a wide date range quietly turning into a flood of requests.
  */
-export const CURL_MAX_PER_RUN = 45;
+export const CURL_MAX_PER_RUN = 200;
 
 /** Largest response body accepted from curl. */
 export const CURL_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;

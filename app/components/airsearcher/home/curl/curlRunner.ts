@@ -2,9 +2,11 @@
 
 import { CURL_MIN_INTERVAL_MS } from "@/lib/airsearcher/config/curl";
 import type { CurlRunResponse } from "@/lib/airsearcher/curl/api";
+import type { CurlErrorInfo } from "@/lib/airsearcher/curl/errors";
 import { recordsFromCurlFlights } from "@/lib/airsearcher/curl/records";
 import { runCurlSearch } from "@/lib/airsearcher/search";
 import {
+  findSearchById,
   loadFilters,
   loadPreferences,
   type CurlRequestCount,
@@ -14,7 +16,14 @@ import type { FlightRecord, NormalizedFlight, SearchQuery } from "@/lib/airsearc
 
 export type RowStatus =
   | { kind: "idle" }
-  | { kind: "pending"; expectedStart: number }
+  | {
+      kind: "pending";
+      expectedStart: number;
+      /** A longer, planned pause. */
+      pause?: boolean;
+      /** Waiting to try again after Google refused the first try. */
+      retry?: boolean;
+    }
   | { kind: "running" }
   | { kind: "done"; flights: number; warnings: string[] }
   | { kind: "failed"; message: string }
@@ -25,6 +34,40 @@ export interface SequenceJob<Id> {
   /** "Row 2" or "ATH,SKG → LHR · 8 Oct · going", used in warnings. */
   label: string;
   send: (signal: AbortSignal) => Promise<CurlRunResponse>;
+  /**
+   * A planned wait before this job is sent, measured from when the previous
+   * one finished. When set, it replaces the fixed CURL_MIN_INTERVAL_MS display.
+   */
+  delayMs?: number;
+  /** Whether `delayMs` is one of the run's longer pauses. */
+  pause?: boolean;
+  /**
+   * Whether a failed job gets one more try: how long to wait first, or null
+   * for no retry. Asked at most once per job.
+   */
+  retryAfterMs?: (error: CurlErrorInfo) => number | null;
+}
+
+/** "Google refused this request (error [13,null,…])…" → "Google refused it (error 13)". */
+function shortReason(error: CurlErrorInfo): string {
+  const code = /error \[(\d+)/.exec(error.message)?.[1];
+  return code ? `Google refused it (error ${code})` : error.message;
+}
+
+/** Waits `ms`, or less if the run is stopped; true when it was stopped. */
+function waitUnlessStopped(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(false);
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      resolve(true);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export interface SequenceOutcome {
@@ -59,11 +102,47 @@ export async function runSequence<Id>(
   const requests: CurlRequestCount[] = [];
 
   for (const [position, job] of jobs.entries()) {
-    const expectedStart = lastFinishedAt === null ? Date.now() : lastFinishedAt + CURL_MIN_INTERVAL_MS;
-    onStatus(job.id, expectedStart > Date.now() ? { kind: "pending", expectedStart } : { kind: "running" });
+    if (job.delayMs !== undefined && job.delayMs > 0) {
+      // A planned wait: shown as a countdown, then the job goes.
+      onStatus(job.id, { kind: "pending", expectedStart: Date.now() + job.delayMs, pause: job.pause });
+      if (await waitUnlessStopped(job.delayMs, signal)) {
+        for (const rest of jobs.slice(position)) onStatus(rest.id, { kind: "skipped", message: "Stopped." });
+        return { flights, warnings, succeeded, requests, stoppedBecause: null };
+      }
+      onStatus(job.id, { kind: "running" });
+    } else if (job.delayMs === undefined) {
+      const expectedStart = lastFinishedAt === null ? Date.now() : lastFinishedAt + CURL_MIN_INTERVAL_MS;
+      onStatus(job.id, expectedStart > Date.now() ? { kind: "pending", expectedStart } : { kind: "running" });
+    } else {
+      onStatus(job.id, { kind: "running" });
+    }
 
-    const response = await job.send(signal);
+    let response = await job.send(signal);
     lastFinishedAt = Date.now();
+
+    // One more try after a wait, when the job asks for it. The first failure
+    // is kept in the warnings either way, so the results say it happened.
+    const retryMs = !response.ok && response.error.code !== "aborted" ? job.retryAfterMs?.(response.error) ?? null : null;
+    if (!response.ok && retryMs !== null) {
+      const first = shortReason(response.error);
+      const seconds = Math.round(retryMs / 1000);
+      onStatus(job.id, { kind: "pending", expectedStart: Date.now() + retryMs, retry: true });
+      if (await waitUnlessStopped(retryMs, signal)) {
+        warnings.push(`${job.label}: ${first}; the run was stopped before the retry.`);
+        for (const rest of jobs.slice(position)) onStatus(rest.id, { kind: "skipped", message: "Stopped." });
+        return { flights, warnings, succeeded, requests, stoppedBecause: null };
+      }
+      onStatus(job.id, { kind: "running" });
+      response = await job.send(signal);
+      lastFinishedAt = Date.now();
+      warnings.push(
+        response.ok
+          ? `${job.label}: ${first}; it worked when retried ${seconds} s later.`
+          : response.error.code === "aborted"
+            ? `${job.label}: ${first}; the run was stopped during the retry.`
+            : `${job.label}: ${first}; retried ${seconds} s later and failed again.`,
+      );
+    }
 
     if (response.ok) {
       succeeded++;
@@ -137,5 +216,12 @@ export function finishRun(
     warnings,
     outcome.requests,
   );
+  // Never open a results page for a search that isn't stored.
+  if (!findSearchById(entry.id)) {
+    return {
+      message: "The results couldn't be saved, so they can't be shown. Nothing was lost on Google's side; try the search again.",
+      records,
+    };
+  }
   return { entry, records };
 }

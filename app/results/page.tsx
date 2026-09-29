@@ -11,15 +11,18 @@ import SidebarToggle from "@/components/airsearcher/common/SidebarToggle";
 import CurlRequestSummary from "@/components/airsearcher/results/CurlRequestSummary";
 import DateRangeView from "@/components/airsearcher/results/DateRangeView";
 import { describePair } from "@/components/airsearcher/results/PriceGrid";
-import ExpandAllToggle from "@/components/airsearcher/results/ExpandAllToggle";
 import FloatingLayer from "@/components/airsearcher/results/FloatingLayer";
 import ResultCard from "@/components/airsearcher/results/ResultCard";
 import ResultsHeader from "@/components/airsearcher/results/ResultsHeader";
 import SortByDropdown from "@/components/airsearcher/results/SortByDropdown";
 import { useFloatingWindows } from "@/components/airsearcher/results/useFloatingWindows";
+import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { resetFilters, type FilterState } from "@/lib/airsearcher/config/filters";
 import type { ArrangementSortMode } from "@/lib/airsearcher/grouping";
 import {
+  everyoneGetsHome,
+  formatPriceRange,
+  groupPriceRange,
   scoreArrangements,
   sortArrangements,
   uniqueArrangements,
@@ -97,6 +100,8 @@ function ResultsView() {
   const [preferences, setPreferences] = useState<StoredPreferences | null>(null);
   const [sortMode, setSortMode] = useState<ArrangementSortMode>("score");
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  // The per-request flight counts and "no price" notes stay hidden until asked for.
+  const [showInfo, setShowInfo] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [now, setNow] = useState<number | null>(null);
   const [source, setSource] = useState<ResultSource>(
@@ -153,8 +158,9 @@ function ResultsView() {
   // The only thing the tab changes: which API's arrangements feed the pipeline.
   const arrangements = useMemo(() => {
     if (!entry) return [];
-    // Searches saved before duplicates were removed can still hold them.
-    return uniqueArrangements(arrangementsFor(entry, activeSource));
+    // Searches saved before duplicates were removed can still hold them, and
+    // older ones results where a group had no way home.
+    return uniqueArrangements(arrangementsFor(entry, activeSource).filter(everyoneGetsHome));
   }, [entry, activeSource]);
 
   /**
@@ -191,6 +197,11 @@ function ResultsView() {
   // Stays on `visible`: re-basing on one cell would make its cards all look cheap.
   const cheapestPrice =
     visible.length > 0 ? Math.min(...visible.map((a) => a.totals.totalPrice)) : null;
+  // Shown as the cheapest result's group range, never as a total.
+  const cheapestResult = visible.find((a) => a.totals.totalPrice === cheapestPrice);
+  const cheapestLabel = cheapestResult
+    ? formatPriceRange(groupPriceRange(cheapestResult), CURRENCY)
+    : null;
 
   const updateFilters = (next: FilterState) => {
     setFilters(next);
@@ -229,8 +240,22 @@ function ResultsView() {
     );
   }
 
-  const listed = selectedOnly.filter((a) => !floating.isFloating(a.id));
-  const allOpen = listed.length > 0 && listed.every((a) => openIds.has(a.id));
+  if (entry.resultsRemoved) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Text size="medium" value={entry.label} className="font-semibold text-gray-900" />
+        <Text
+          size="small"
+          value="This search is more than a day old, so its results were removed. Run it again from the home page for current prices."
+          className="text-gray-500"
+        />
+        <Button styleType="primary" href="/">
+          Back to search
+        </Button>
+      </div>
+    );
+  }
+
   const reasons = visible.length === 0 ? explainEmpty(arrangements, filters) : [];
   const pairLabel = selectedPair
     ? describePair(selectedPair, daysBetween(selectedPair.departureDate, selectedPair.returnDate))
@@ -277,20 +302,39 @@ function ResultsView() {
           </div>
         )}
 
-        {activeSource === "google-curl" &&
-          (entry.googleCurl?.requests ? (
-            <CurlRequestSummary
-              requests={entry.googleCurl.requests}
-              uniqueFlights={entry.googleCurl.uniqueFlights}
-            />
-          ) : (
-            <Text
-              size="very small"
-              icon="info"
-              value="This search was saved before the flights read per Google request were recorded. Run it again to see them."
-              className="text-gray-500"
-            />
-          ))}
+        {activeSource === "google-curl" && (
+          <div className="flex flex-col gap-2">
+            <div>
+              <Button styleType="tertiary" onClick={() => setShowInfo((v) => !v)}>
+                <Text
+                  icon={showInfo ? "chevron-up" : "info"}
+                  size="small"
+                  value={showInfo ? "Hide info" : "Show info"}
+                />
+              </Button>
+            </div>
+
+            {showInfo &&
+              (entry.googleCurl?.requests ? (
+                <CurlRequestSummary
+                  requests={entry.googleCurl.requests}
+                  uniqueFlights={entry.googleCurl.uniqueFlights}
+                />
+              ) : (
+                <Text
+                  size="very small"
+                  icon="info"
+                  value="This search was saved before the flights read per Google request were recorded. Run it again to see them."
+                  className="text-gray-500"
+                />
+              ))}
+
+            {showInfo &&
+              entry.googleCurl?.warnings?.map((warning) => (
+                <Text key={warning} size="very small" icon="info" value={warning} className="text-gray-500" />
+              ))}
+          </div>
+        )}
 
         {activeSource === "travelpayouts" && !entry.travelpayouts && (
           <Text
@@ -306,11 +350,6 @@ function ResultsView() {
             className="text-gray-500"
           />
         )}
-
-        {activeSource === "google-curl" &&
-          entry.googleCurl?.warnings?.map((warning) => (
-            <Text key={warning} size="very small" icon="info" value={warning} className="text-gray-500" />
-          ))}
 
         {rangeSearch && (
           <DateRangeView
@@ -337,18 +376,11 @@ function ResultsView() {
               <Text icon="close" size="very small" className={colorSecondary.text} />
             </Button>
           )}
-          <ExpandAllToggle
-            allOpen={allOpen}
-            disabled={listed.length === 0}
-            onToggleAll={(open) =>
-              setOpenIds(open ? new Set(listed.map((a) => a.id)) : new Set())
-            }
-          />
           <div className="ml-auto">
             <SortByDropdown
               value={sortMode}
               onChange={setSortMode}
-              cheapestPrice={cheapestPrice}
+              cheapestLabel={cheapestLabel}
             />
           </div>
         </div>
@@ -392,8 +424,10 @@ function ResultsView() {
                 key={arrangement.id}
                 arrangement={arrangement}
                 cheapestPrice={cheapestPrice ?? arrangement.totals.totalPrice}
+                compareWith={selectedOnly}
                 open={openIds.has(arrangement.id)}
                 floating={floating.isFloating(arrangement.id)}
+                showDateHeader={rangeSearch}
                 onToggle={() =>
                   setOpenIds((current) => {
                     const next = new Set(current);

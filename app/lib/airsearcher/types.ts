@@ -202,7 +202,17 @@ export interface Arrangement {
   totals: ArrangementTotals;
   /** 0..1, higher is better. */
   score: number;
-  indices: { price: number; hour: number | null };
+  /** Each 0..1 against the rest of the results, higher is better; `stops` 1 is the fewest stops. */
+  indices: { price: number; hour: number | null; stops: number };
+  /**
+   * How `score` was made: each index times its weight (the weights sum to 1),
+   * plus the priority-date bonus, capped at 1. Set by `scoreArrangements`;
+   * absent on an arrangement that has not been scored.
+   */
+  breakdown?: {
+    weights: { stops: number; price: number; hour: number };
+    bonus: number;
+  };
 }
 
 export interface ArrangementTotals {

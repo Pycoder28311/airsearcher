@@ -11,6 +11,8 @@ export interface CellState {
   /** Price from the stored floor: filters not applied, no flights to list. */
   unfiltered: boolean;
   cheapest: number | null;
+  /** Shown instead of a total: the cheapest–priciest group per passenger, e.g. "188–292". */
+  rangeText: string | null;
   /** The single lowest price in the grid. */
   isBest: boolean;
   /** "low" | "mid" | "high" tercile, or null when empty. */
@@ -22,9 +24,9 @@ export interface CellState {
  * One cell of the price grid.
  *
  * Written like `calendar/DayCell`: a tertiary Button whose state classes carry
- * `!`, so they win over the variant's own background. The price is bare — the
- * currency is stated once in the panel header — and `label` spells the cell
- * out in full for screen readers.
+ * `!`, so they win over the variant's own background. The price range is bare —
+ * the currency is stated once in the panel header — and `label` spells the
+ * cell out in full for screen readers.
  */
 export default function PriceGridCell({
   state,
@@ -69,7 +71,7 @@ export default function PriceGridCell({
           state.selected ? "ring-2 ring-orange-500" : ""
         }`}
       >
-        <span aria-hidden>{state.empty ? "–" : state.cheapest}</span>
+        <span aria-hidden>{state.empty ? "–" : (state.rangeText ?? "·")}</span>
         <span className="sr-only">{label}</span>
       </Button>
     </td>

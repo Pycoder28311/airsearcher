@@ -4,6 +4,7 @@ import { useState } from "react";
 import Text from "@/framework/ui/iconText/Text";
 import { border, grayLight, grayMid, radiusBig } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
+import { formatPriceRange } from "@/lib/airsearcher/grouping";
 import {
   pairKey,
   priceBand,
@@ -38,34 +39,42 @@ export function describePair(pair: DatePair, nights: number): string {
   }`;
 }
 
+/** The cell's group price range as shown, or null when there is none to show. */
+function rangeText(cell: Cell | undefined): string | null {
+  return cell?.range ? formatPriceRange(cell.range) : null;
+}
+
 function describeCell(cell: Cell): string {
   const results = `${cell.count} result${cell.count === 1 ? "" : "s"}`;
+  const range = cell.range ? formatPriceRange(cell.range, CURRENCY) : "price range not stored";
   const price =
     cell.cheapest === null
       ? "no result"
       : cell.unfiltered
-        ? `from ${cell.cheapest} ${CURRENCY} before filters, flights not kept`
-        : `from ${cell.cheapest} ${CURRENCY}, ${results}`;
+        ? `cheapest result ${range} per passenger before filters, flights not kept`
+        : `cheapest result ${range} per passenger, ${results}`;
   return `Leave ${formatDate(cell.departureDate)}, return ${formatDate(cell.returnDate)}, ${
     cell.nights
   } night${cell.nights === 1 ? "" : "s"}, ${price}`;
 }
 
-/** Cheapest filtered price among cells, or null. */
-function minOf(cells: (Cell | undefined)[]): number | null {
-  const prices = cells
-    .filter((c) => c && !c.unfiltered)
-    .map((c) => c?.cheapest)
-    .filter((p): p is number => typeof p === "number");
-  return prices.length > 0 ? Math.min(...prices) : null;
+/** The cell holding the cheapest filtered result among these, or null. */
+function bestOf(cells: (Cell | undefined)[]): Cell | null {
+  let best: Cell | null = null;
+  for (const cell of cells) {
+    if (!cell || cell.unfiltered || cell.cheapest === null) continue;
+    if (!best || cell.cheapest < best.cheapest!) best = cell;
+  }
+  return best;
 }
 
 const STICKY_ROW = `sticky left-0 z-10 bg-white`;
 const COLUMN = "w-16 sm:w-20";
 
 /**
- * Departure dates down the side, return dates across the top, the cheapest
- * group total in every allowed pair. Scrolls inside its own panel with both
+ * Departure dates down the side, return dates across the top. Every allowed
+ * pair shows its cheapest result as a range: what its cheapest and its
+ * priciest group pay per passenger, both directions and stops included. Scrolls inside its own panel with both
  * headers pinned; the hovered cell is read out in a fixed line above the table
  * so no tooltip is clipped by the scroller.
  */
@@ -87,14 +96,14 @@ export default function PriceGrid({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <Text
           size="small"
-          value={`Cheapest group total by departure and return date (${CURRENCY})`}
+          value={`Cheapest result by departure and return date: cheapest–priciest group per passenger (${CURRENCY})`}
           className="font-semibold text-gray-900"
         />
         <Text
           size="very small"
           value={
             best
-              ? `Cheapest ${best.cheapest} ${CURRENCY} · ${describePair(best, best.nights)}`
+              ? `Cheapest ${best.range ? formatPriceRange(best.range, CURRENCY) : "—"} · ${describePair(best, best.nights)}`
               : "No date pair has results with the current filters"
           }
           className="text-gray-500"
@@ -112,7 +121,7 @@ export default function PriceGrid({
         onMouseLeave={() => setHovered(null)}
       >
         <table className="w-max table-fixed border-separate border-spacing-0 text-xs">
-          <caption className="sr-only">Cheapest group total for each departure and return date</caption>
+          <caption className="sr-only">Group price range of the cheapest result for each departure and return date</caption>
           <thead>
             <tr>
               <th scope="col" className={`${STICKY_ROW} top-0 z-20 ${COLUMN} p-1 text-left text-gray-400`}>
@@ -131,7 +140,7 @@ export default function PriceGrid({
           <tbody>
             {grid.departureDates.map((departureDate) => {
               const rowCells = grid.returnDates.map((r) => grid.cells.get(pairKey(departureDate, r)));
-              const rowBest = minOf(rowCells);
+              const rowBest = bestOf(rowCells);
               return (
                 <tr key={departureDate}>
                   <th scope="row" className={`${STICKY_ROW} p-1 font-normal`}>
@@ -150,6 +159,7 @@ export default function PriceGrid({
                           empty: cell?.cheapest === null,
                           unfiltered: cell?.unfiltered ?? false,
                           cheapest: cell?.cheapest ?? null,
+                          rangeText: rangeText(cell),
                           isBest: !!cell && cell === best,
                           band: priceBand(cell?.cheapest ?? null, grid.thresholds),
                           selected: isSelected,
@@ -161,7 +171,7 @@ export default function PriceGrid({
                     );
                   })}
                   <td className={`p-1 text-center tabular-nums text-gray-600 ${grayLight.bg}`}>
-                    {rowBest ?? "–"}
+                    {rangeText(rowBest ?? undefined) ?? "–"}
                   </td>
                 </tr>
               );
@@ -172,7 +182,9 @@ export default function PriceGrid({
               </th>
               {grid.returnDates.map((returnDate) => (
                 <td key={returnDate} className={`p-1 text-center tabular-nums text-gray-600 ${grayLight.bg}`}>
-                  {minOf(grid.departureDates.map((d) => grid.cells.get(pairKey(d, returnDate)))) ?? "–"}
+                  {rangeText(
+                    bestOf(grid.departureDates.map((d) => grid.cells.get(pairKey(d, returnDate)))) ?? undefined,
+                  ) ?? "–"}
                 </td>
               ))}
               <td className={grayLight.bg} />

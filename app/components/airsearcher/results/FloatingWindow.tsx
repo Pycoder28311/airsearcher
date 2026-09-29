@@ -5,6 +5,7 @@ import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { border, grayLight, grayMid, radiusBig } from "@/config/theme";
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
+import { formatPriceRange, groupPriceRange } from "@/lib/airsearcher/grouping";
 import type { Arrangement } from "@/lib/airsearcher/types";
 import type { FloatingBox } from "./useFloatingWindows";
 import ResultCardOpen from "./ResultCardOpen";
@@ -18,6 +19,7 @@ import ResultCardOpen from "./ResultCardOpen";
 export default function FloatingWindow({
   arrangement,
   cheapestPrice,
+  compareWith,
   box,
   onMove,
   onResize,
@@ -26,6 +28,8 @@ export default function FloatingWindow({
 }: {
   arrangement: Arrangement;
   cheapestPrice: number;
+  /** Every listed result, for the price comparison. */
+  compareWith: Arrangement[];
   box: FloatingBox;
   onMove: (x: number, y: number) => void;
   onResize: (width: number, height: number) => void;
@@ -86,7 +90,7 @@ export default function FloatingWindow({
         <div className="flex min-w-0 flex-col">
           <Text
             size="small"
-            value={`${arrangement.totals.totalPrice} ${CURRENCY}`}
+            value={formatPriceRange(groupPriceRange(arrangement), CURRENCY)}
             className="font-semibold text-gray-900"
           />
           <Text
@@ -109,7 +113,11 @@ export default function FloatingWindow({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <ResultCardOpen arrangement={arrangement} cheapestPrice={cheapestPrice} />
+        <ResultCardOpen
+          arrangement={arrangement}
+          cheapestPrice={cheapestPrice}
+          compareWith={compareWith}
+        />
       </div>
 
       <div

@@ -9,10 +9,21 @@
  * `FilterScope`, so a filter can be pointed at the going flights, the returning
  * flights, or both. An arrangement passes only when every origin group's
  * flights — feeders included, in both directions — pass.
+ *
+ * Stops, waits, connecting airports and total duration are judged per journey
+ * (one direction of one group) through `journeyStops.ts`, so a change of plane
+ * inside a Google ticket and a change between two tickets at the hub count the
+ * same.
  */
 
 import { journeyFlights, type Arrangement, type NormalizedFlight } from "@/lib/airsearcher/types";
 import { parseFlightHour } from "@/lib/airsearcher/ranking";
+import { groupPriceRange } from "@/lib/airsearcher/grouping";
+import {
+  journeyConnections,
+  journeyMinutes,
+  journeyStopCount,
+} from "@/lib/airsearcher/journeyStops";
 import type {
   FilterScope,
   FilterState,
@@ -42,6 +53,19 @@ export function flightsInScope(
   return [...set.going, ...set.returning];
 }
 
+/**
+ * The journeys a scoped filter looks at: each in-scope direction's flights in
+ * flown order. A direction with no flights (one-way return) is left out.
+ */
+export function journeysInScope(
+  set: LegFlightSet,
+  scope: FilterScope,
+): NormalizedFlight[][] {
+  const journeys =
+    scope === "going" ? [set.going] : scope === "returning" ? [set.returning] : [set.going, set.returning];
+  return journeys.filter((flights) => flights.length > 0);
+}
+
 /** One flight set per origin group in the arrangement. */
 export function flightSetsOf(arrangement: Arrangement): LegFlightSet[] {
   return arrangement.legs.map((leg) => ({
@@ -60,15 +84,18 @@ export function stopBucket(stops: number): StopOption {
   return "3+";
 }
 
-/** Every in-scope flight must fall in one of the selected buckets. */
+/**
+ * Every in-scope journey must fall in one of the selected buckets, counting a
+ * change between tickets as a stop just like one inside a ticket.
+ */
 export function matchesStops(
   set: LegFlightSet,
   selected: StopOption[],
   scope: FilterScope = "both",
 ): boolean {
   if (selected.length === 0) return true;
-  return flightsInScope(set, scope).every((flight) =>
-    selected.includes(stopBucket(flight.outbound.stops)),
+  return journeysInScope(set, scope).every((flights) =>
+    selected.includes(stopBucket(journeyStopCount(flights))),
   );
 }
 
@@ -131,49 +158,46 @@ export function matchesTimeWindow(
   return hour >= window[0] && hour <= window[1];
 }
 
-/** Every in-scope flight must be within the limit. */
+/** Every in-scope journey, waits between tickets included, must be within the limit. */
 export function matchesMaxDuration(
   set: LegFlightSet,
   maxMinutes: number | null,
   scope: FilterScope = "both",
 ): boolean {
   if (maxMinutes === null) return true;
-  return flightsInScope(set, scope).every((flight) => {
-    const total = flight.outbound.totalDurationMinutes;
+  return journeysInScope(set, scope).every((flights) => {
+    const total = journeyMinutes(flights);
     return total === null || total <= maxMinutes;
   });
 }
 
-/** Every layover on every in-scope flight must sit inside the range. */
+/** Every wait in every in-scope journey — inside a ticket or between two — must sit inside the range. */
 export function matchesLayover(
   set: LegFlightSet,
   range: [number, number] | null,
   scope: FilterScope = "both",
 ): boolean {
   if (range === null) return true;
-  return flightsInScope(set, scope).every((flight) =>
-    flight.outbound.layovers.every((l) => {
-      if (l.durationMinutes === null) return true;
-      return l.durationMinutes >= range[0] && l.durationMinutes <= range[1];
+  return journeysInScope(set, scope).every((flights) =>
+    journeyConnections(flights).every(({ minutes }) => {
+      if (minutes === null) return true;
+      return minutes >= range[0] && minutes <= range[1];
     }),
   );
 }
 
-/** Airports a group connects through, excluding origin and destination. */
+/**
+ * Airports a group connects through, excluding origin and destination — the
+ * hub where tickets are joined included.
+ */
 export function connectingAirports(
   set: LegFlightSet,
   scope: FilterScope = "both",
 ): string[] {
   const codes = new Set<string>();
-  for (const flight of flightsInScope(set, scope)) {
-    for (const l of flight.outbound.layovers) {
-      if (l.airport) codes.add(l.airport);
-    }
-    // Fall back to segment boundaries when layovers are absent.
-    const segments = flight.outbound.segments;
-    for (let i = 0; i < segments.length - 1; i++) {
-      const code = segments[i].arrival.airport;
-      if (code) codes.add(code);
+  for (const flights of journeysInScope(set, scope)) {
+    for (const { airport } of journeyConnections(flights)) {
+      if (airport) codes.add(airport);
     }
   }
   return [...codes];
@@ -311,8 +335,9 @@ function flightSetPasses(
 /**
  * An arrangement survives only when every origin group's flights survive.
  * Price and airlines are the exceptions: they are judged on the whole
- * arrangement, not per group, because a price filter means what the whole
- * group pays and an airline choice means one airline for everyone.
+ * arrangement. The price range must hold every group's per-passenger price —
+ * from the cheapest group to the priciest — and an airline choice means one
+ * airline for everyone.
  */
 function arrangementPasses(
   arrangement: Arrangement,
@@ -321,8 +346,8 @@ function arrangementPasses(
 ): boolean {
   if (skip !== "price" && filters.priceRange !== null) {
     const [min, max] = filters.priceRange;
-    const total = arrangement.totals.totalPrice;
-    if (total < min || total > max) return false;
+    const range = groupPriceRange(arrangement);
+    if (range.min < min || range.max > max) return false;
   }
 
   const sets = flightSetsOf(arrangement);

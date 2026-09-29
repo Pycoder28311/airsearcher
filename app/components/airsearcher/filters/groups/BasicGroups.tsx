@@ -108,7 +108,7 @@ export function PriceGroup({
         value={[Math.max(min, range[0]), Math.min(max, range[1])]}
         onChange={(next) => onChange({ ...filters, priceRange: next })}
         formatValue={(v) => `${v} ${CURRENCY}`}
-        ariaLabel="Total group price"
+        ariaLabel="Price per passenger, every group"
       />
 
       {filters.priceRange !== null && (

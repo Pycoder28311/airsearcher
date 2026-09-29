@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { hourValue, priceIndex, normalizeWeights } from "@/lib/airsearcher/ranking";
 import {
   buildArrangements,
+  everyoneGetsHome,
   enumerateRoutings,
   ARRANGEMENTS_PER_ROUTING,
   poolKey,
@@ -34,7 +35,13 @@ import {
   poolFromRecords,
 } from "@/lib/airsearcher/serpApi";
 import { googleFlightsUrl } from "@/lib/airsearcher/links";
-import { applyScopedFilters } from "@/lib/airsearcher/filtering";
+import {
+  applyScopedFilters,
+  connectingAirports,
+  matchesLayover,
+  matchesStops,
+} from "@/lib/airsearcher/filtering";
+import { journeyStopCount } from "@/lib/airsearcher/journeyStops";
 import { DEFAULT_FILTERS } from "@/lib/airsearcher/config/filters";
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { buildSearchResult, usesSerpApi } from "@/lib/airsearcher/search";
@@ -254,7 +261,7 @@ const GRID_QUERY: SearchQuery = {
 
 /** Just enough of an arrangement for the grid: its dates and its price. */
 function priced(departureDate: string, returnDate: string, totalPrice: number): Arrangement {
-  return { departureDate, returnDate, totals: { totalPrice } } as unknown as Arrangement;
+  return { departureDate, returnDate, legs: [], totals: { totalPrice } } as unknown as Arrangement;
 }
 
 check("the price grid has a row per candidate date and only 2-4 night cells", () => {
@@ -725,46 +732,131 @@ function londonArrangements(pool: FlightPool, returnDate: string | null = BACK) 
   });
 }
 
-check("a group with no return flights still appears, without a return", () => {
+check("a group with no way home rules the arrangement out", () => {
+  // No STN -> SKG: SKG flying direct could not get back, so only via ATH is left.
   const arrangements = londonArrangements(londonPool());
-  const direct = arrangements.find(
-    (a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === "direct",
-  )!;
-  assert.ok(direct, "SKG direct is kept although there is no STN -> SKG");
-  assert.equal(direct.legs.find((leg) => leg.origin === "SKG")!.return, null);
-
-  const gather = arrangements.find(
-    (a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === "gather",
-  )!;
-  const skg = gather.legs.find((leg) => leg.origin === "SKG")!;
-  assert.equal(skg.return?.routing, "gather", "via ATH out means via ATH back");
+  assert.ok(arrangements.length > 0);
+  for (const arrangement of arrangements) {
+    const skg = arrangement.legs.find((leg) => leg.origin === "SKG")!;
+    assert.equal(skg.outbound.routing, "gather", "SKG direct has no way back");
+    assert.equal(skg.return?.routing, "gather", "via ATH out means via ATH back");
+    assert.ok(skg.return?.feeder, "and home to SKG from ATH");
+    assert.ok(everyoneGetsHome(arrangement));
+  }
 });
 
-check("a group's price counts only the flights it has", () => {
-  const arrangements = londonArrangements(londonPool());
-  const bySkg = (routing: string) =>
-    arrangements.find(
-      (a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === routing,
-    )!;
-  // ATH: 2 x (100 + 90). SKG direct: 2 x 80, no return flight.
-  assert.equal(bySkg("direct").totals.totalPrice, 2 * 190 + 2 * 80);
-  // SKG via ATH: 2 x (30 + 100 out, 90 + 40 back).
-  assert.equal(bySkg("gather").totals.totalPrice, 2 * 190 + 2 * 260);
+check("a group's price counts its flights both ways", () => {
+  const [arrangement] = londonArrangements(londonPool());
+  // ATH: 2 x (100 + 90). SKG via ATH: 2 x (30 + 100 out, 90 + 40 back).
+  assert.equal(arrangement.totals.totalPrice, 2 * 190 + 2 * 260);
 });
 
-check("a missing return does not remove the arrangement", () => {
+check("landing at the hub with no flight home removes the arrangement", () => {
   const pool = londonPool();
   delete pool[poolKey("ATH", "SKG", BACK)];
-  const arrangements = londonArrangements(pool);
-  assert.equal(arrangements.length, 2);
+  assert.equal(londonArrangements(pool).length, 0);
+  // One way, nobody needs to get back.
+  assert.ok(londonArrangements(pool, null).length > 0);
 });
 
-check("return hops are not checked for connection", () => {
+check("results saved without a way home are recognised", () => {
+  const [arrangement] = londonArrangements(londonPool());
+  const noReturn = {
+    ...arrangement,
+    legs: arrangement.legs.map((leg) => (leg.origin === "SKG" ? { ...leg, return: null } : leg)),
+  };
+  const noFeeder = {
+    ...arrangement,
+    legs: arrangement.legs.map((leg) =>
+      leg.origin === "SKG" && leg.return ? { ...leg, return: { ...leg.return, feeder: null } } : leg,
+    ),
+  };
+  assert.equal(everyoneGetsHome(noReturn), false);
+  assert.equal(everyoneGetsHome(noFeeder), false);
+  assert.equal(everyoneGetsHome({ ...noReturn, returnDate: null }), true);
+});
+
+check("a return feeder leaving too soon after the main flight lands is rejected", () => {
   const pool = londonPool();
+  // STN -> ATH lands 17:00; an 18:00 feeder is inside the connection buffer.
   pool[poolKey("ATH", "SKG", BACK)] = [
     flight("ATH", "SKG", `${BACK} 18:00`, `${BACK} 19:00`, 40),
   ];
-  assert.equal(londonArrangements(pool).length, 2);
+  // SKG direct has no way back either (no STN -> SKG), so SKG cannot get home.
+  assert.equal(londonArrangements(pool).length, 0);
+
+  // A later feeder that does connect brings the via-ATH plan back.
+  pool[poolKey("ATH", "SKG", BACK)].push(flight("ATH", "SKG", `${BACK} 19:00`, `${BACK} 20:00`, 45));
+  const again = londonArrangements(pool);
+  const skg = again
+    .map((a) => a.legs.find((leg) => leg.origin === "SKG")!)
+    .find((leg) => leg.outbound.routing === "gather")!;
+  assert.ok(skg, "the connecting feeder is used");
+  assert.equal(skg.return?.feeder?.outbound.segments[0].departure.time, `${BACK} 19:00`);
+});
+
+/** One Google-style ticket with its own stop: SKG -> ATH -> STN, one price. */
+function oneStopTicket(price: number): NormalizedFlight {
+  return normalizeSerpApiResponse({
+    best_flights: [
+      {
+        flights: [
+          {
+            departure_airport: { id: "SKG", name: "SKG", time: `${OUT} 06:00` },
+            arrival_airport: { id: "ATH", name: "ATH", time: `${OUT} 07:00` },
+            airline: "Fixture Air",
+            flight_number: "FX 1",
+          },
+          {
+            departure_airport: { id: "ATH", name: "ATH", time: `${OUT} 10:00` },
+            arrival_airport: { id: "STN", name: "STN", time: `${OUT} 12:00` },
+            airline: "Fixture Air",
+            flight_number: "FX 2",
+          },
+        ],
+        layovers: [{ id: "ATH", name: "ATH", duration: 180 }],
+        price,
+      },
+    ],
+  })[0];
+}
+
+check("a stop inside a ticket and a stop between tickets count the same", () => {
+  const combined = [
+    flight("SKG", "ATH", `${OUT} 06:00`, `${OUT} 07:00`, 30),
+    flight("ATH", "STN", `${OUT} 10:00`, `${OUT} 12:00`, 100),
+  ];
+  const ticket = [oneStopTicket(130)];
+
+  for (const going of [combined, ticket]) {
+    const set = { going, returning: [] };
+    assert.equal(journeyStopCount(going), 1);
+    assert.equal(matchesStops(set, ["non-stop"]), false, "non-stop rules both out");
+    assert.equal(matchesStops(set, ["1"]), true);
+    assert.deepEqual(connectingAirports(set), ["ATH"]);
+    assert.equal(matchesLayover(set, [0, 120]), false, "the 3h wait is judged either way");
+    assert.equal(matchesLayover(set, [0, 240]), true);
+  }
+});
+
+check("results without stops rank well above cheaper ones with stops", () => {
+  const pool = londonPool();
+  // SKG direct is now far dearer than going via ATH.
+  pool[poolKey("SKG", "STN", OUT)] = [flight("SKG", "STN", `${OUT} 09:00`, `${OUT} 12:00`, 500)];
+  const scored = scoreArrangements(
+    londonArrangements(pool, null),
+    { price: 100, hour: 0 },
+    DEFAULT_RANKING_CONFIG,
+  );
+  const byRouting = (routing: string) =>
+    scored.find((a) => a.legs.find((leg) => leg.origin === "SKG")!.outbound.routing === routing)!;
+
+  assert.equal(byRouting("direct").indices.stops, 1);
+  assert.equal(byRouting("gather").indices.price, 1, "via ATH is the cheapest");
+  assert.ok(
+    byRouting("direct").score > byRouting("gather").score,
+    "everyone non-stop outranks a cheaper result with a stop",
+  );
 });
 
 check("each return is matched to flights from its own return date", () => {
@@ -1093,6 +1185,36 @@ check("a Google Flights link is built from the flight's route and day", () => {
   const url = new URL(googleFlightsUrl(flight("HER", "ATH", "2026-10-01 09:00", "2026-10-01 10:00", 40))!);
   assert.equal(url.origin + url.pathname, "https://www.google.com/travel/flights");
   assert.equal(url.searchParams.get("q"), "Flights from HER to ATH on 2026-10-01 one way");
+});
+
+check("a ticket's link opens its booking page, naming every flight in it", () => {
+  const tfsText = (url: string) =>
+    Buffer.from(new URL(url).searchParams.get("tfs")!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("latin1");
+  const numbered = (f: NormalizedFlight, numbers: string[]): NormalizedFlight => ({
+    ...f,
+    outbound: { ...f.outbound, segments: f.outbound.segments.map((s, i) => ({ ...s, flightNumber: numbers[i] })) },
+  });
+
+  // One flight: ATH -> LTN, Ryanair FR 7806.
+  const single = numbered(flight("ATH", "LTN", "2026-10-15 20:45", "2026-10-15 22:40", 111), ["FR 7806"]);
+  const url = googleFlightsUrl(single)!;
+  assert.equal(new URL(url).pathname, "/travel/flights/booking");
+  assert.match(tfsText(url), /ATH\x12\n2026-10-15\x1a\x03LTN\*\x02FR2\x047806/);
+
+  // A ticket with its own stop: both flights, in order, in one link.
+  const leg1 = flight("SKG", "ATH", "2026-10-15 06:00", "2026-10-15 07:00", 0).outbound.segments[0];
+  const leg2 = flight("ATH", "LTN", "2026-10-15 20:45", "2026-10-15 22:40", 0).outbound.segments[0];
+  const withStop = numbered(
+    { ...single, outbound: { ...single.outbound, segments: [leg1, leg2], stops: 1 } },
+    ["A3 123", "A3 760"],
+  );
+  const text = tfsText(googleFlightsUrl(withStop)!);
+  assert.ok(text.indexOf("A32\x03123") < text.indexOf("A32\x03760"), "flights in flown order");
+  assert.ok(text.includes("SKG") && text.includes("LTN"));
+
+  // No usable flight number: the route on its day, as before.
+  const unknown = numbered(single, ["Fixture Air"]);
+  assert.equal(new URL(googleFlightsUrl(unknown)!).pathname, "/travel/flights");
 });
 
 check("the airline filter keeps only results flown entirely by one chosen airline", () => {

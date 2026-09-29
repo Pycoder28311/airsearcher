@@ -34,6 +34,7 @@ import {
   FiBarChart2,
   FiHelpCircle,
   FiDroplet,
+  FiExternalLink,
 } from "react-icons/fi";
 import { LuPlane } from "react-icons/lu";
 
@@ -73,6 +74,7 @@ export const ICONS = {
   help: FiHelpCircle,
   palette: FiDroplet,
   plane: LuPlane,
+  "external-link": FiExternalLink,
 } satisfies Record<string, IconType>;
 
 export type IconName = keyof typeof ICONS;

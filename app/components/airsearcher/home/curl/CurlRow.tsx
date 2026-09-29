@@ -46,8 +46,16 @@ export function RunStatus({ status }: { status: RowStatus }) {
         <Text
           size="very small"
           icon="clock"
-          value={seconds > 0 ? `Waiting ~${seconds} s so requests stay human-paced…` : "Sending…"}
-          className={colorMain.text}
+          value={
+            seconds <= 0
+              ? "Sending…"
+              : status.retry
+                ? `Google refused it · retrying in ~${seconds} s`
+                : status.pause
+                  ? `Taking a longer pause · ~${seconds} s`
+                  : `Waiting ~${seconds} s…`
+          }
+          className={status.retry ? colorSecondary.text : colorMain.text}
         />
       );
     case "running":

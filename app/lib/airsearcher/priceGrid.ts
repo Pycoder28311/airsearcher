@@ -14,14 +14,21 @@
 
 import { candidateDates, flexibleTripLength, returnDatesFor } from "@/lib/airsearcher/queryPlan";
 import { daysBetween } from "@/lib/airsearcher/time";
+import { groupPriceRange, type PriceRange } from "@/lib/airsearcher/grouping";
 import type { Arrangement, SearchQuery } from "@/lib/airsearcher/types";
 
 export interface PriceGridCell {
   departureDate: string;
   returnDate: string;
   nights: number;
-  /** Cheapest group total for this pair; null when nothing survives. */
+  /** Cheapest group total for this pair; null when nothing survives. Ranks and shades cells. */
   cheapest: number | null;
+  /**
+   * What is shown: the cheapest and priciest group's per-passenger price in
+   * the cheapest result of this pair. Null when nothing survives, or for a
+   * floor cell of a search saved before ranges were stored.
+   */
+  range: PriceRange | null;
   /** How many arrangements sit in this cell. */
   count: number;
   /**
@@ -35,6 +42,8 @@ export interface PriceGridCell {
 export interface StoredPriceGrid {
   /** `${departureDate}|${returnDate}` -> cheapest total price. */
   cells: Record<string, number>;
+  /** Same keys -> that cheapest result's group price range. Absent on older searches. */
+  ranges?: Record<string, PriceRange>;
 }
 
 export interface PriceGrid {
@@ -64,13 +73,17 @@ export function pairKey(departureDate: string, returnDate: string): string {
 /** The floor stored with a search: the cheapest total of every round-trip pair. */
 export function cheapestPerPair(arrangements: Arrangement[]): StoredPriceGrid {
   const cells: Record<string, number> = {};
+  const ranges: Record<string, PriceRange> = {};
   for (const arrangement of arrangements) {
     if (!arrangement.returnDate) continue;
     const key = pairKey(arrangement.departureDate, arrangement.returnDate);
     const price = arrangement.totals.totalPrice;
-    if (cells[key] === undefined || price < cells[key]) cells[key] = price;
+    if (cells[key] === undefined || price < cells[key]) {
+      cells[key] = price;
+      ranges[key] = groupPriceRange(arrangement);
+    }
   }
-  return { cells };
+  return { cells, ranges };
 }
 
 const EMPTY_GRID: PriceGrid = {
@@ -112,6 +125,7 @@ export function buildPriceGrid(
         returnDate,
         nights: daysBetween(departureDate, returnDate),
         cheapest: null,
+        range: null,
         count: 0,
         unfiltered: false,
       });
@@ -124,7 +138,10 @@ export function buildPriceGrid(
     if (!cell) continue;
     cell.count++;
     const price = arrangement.totals.totalPrice;
-    if (cell.cheapest === null || price < cell.cheapest) cell.cheapest = price;
+    if (cell.cheapest === null || price < cell.cheapest) {
+      cell.cheapest = price;
+      cell.range = groupPriceRange(arrangement);
+    }
   }
 
   if (fallback) {
@@ -135,6 +152,7 @@ export function buildPriceGrid(
       const floor = fallback.floor.cells[key];
       if (cell.cheapest !== null || storedPairs.has(key) || floor === undefined) continue;
       cell.cheapest = floor;
+      cell.range = fallback.floor.ranges?.[key] ?? null;
       cell.unfiltered = true;
     }
   }

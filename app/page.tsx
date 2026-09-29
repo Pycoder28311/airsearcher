@@ -14,7 +14,15 @@ import {
   DEFAULT_PASSENGERS_PER_ORIGIN,
   GREEK_ORIGIN_DEFAULTS,
 } from "@/lib/airsearcher/config/constants";
-import { loadFilters, loadPreferences, loadSearches, removeSearch, savePreferences, type StoredSearch } from "@/lib/airsearcher/storage";
+import {
+  loadFilters,
+  loadPreferences,
+  loadSearches,
+  pruneOutdatedResults,
+  removeSearch,
+  savePreferences,
+  type StoredSearch,
+} from "@/lib/airsearcher/storage";
 import { flushStorage, storageError, storageReady } from "@/lib/airsearcher/storageClient";
 import { runSearch, SearchRequestError, usesSerpApi } from "@/lib/airsearcher/search";
 import { addDays, isoDate } from "@/lib/airsearcher/time";
@@ -74,6 +82,8 @@ export default function HomePage() {
           { durationMs: 8000 },
         );
       }
+      // Outdated searches keep their card; their results are removed.
+      pruneOutdatedResults();
       setHistory(loadSearches());
       setNow(Date.now());
       // Coming from the navbar's History link: the list only exists once the
@@ -155,7 +165,7 @@ export default function HomePage() {
     async (entry: StoredSearch) => {
       setHistory(loadSearches());
       const found = entry.googleCurl?.arrangements.length ?? 0;
-      showAlert("Success", `Built ${found} arrangements from the pasted cURLs.`);
+      showAlert("Success", `Built ${found} arrangements from Google Flights.`);
       await flushStorage();
       router.push(`/results?search=${entry.id}&source=google-curl`);
     },

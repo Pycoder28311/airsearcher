@@ -51,9 +51,10 @@ export const MAX_AIRPORTS_PER_REQUEST = 7;
 export const AIRPORT_ZOOM_THRESHOLD = 6;
 
 /**
- * Minimum gap between a feeder landing at the gathering airport and the main
- * flight leaving it. Anything tighter is not a connection anyone would book, so
- * such arrangements are rejected rather than scored badly.
+ * Minimum gap between one flight landing at the gathering airport and the next
+ * leaving it — the feeder then the main flight going out, the main flight then
+ * the feeder coming back. Anything tighter is not a connection anyone would
+ * book, so such arrangements are rejected rather than scored badly.
  */
 export const MIN_GATHER_BUFFER_MINUTES = 90;
 
@@ -63,6 +64,23 @@ export const MIN_GATHER_BUFFER_MINUTES = 90;
  * never drag a clearly worse one to the top.
  */
 export const DATE_PRIORITY_BONUS = 0.02;
+
+/**
+ * Share of the score given to flying without stops, before price and hours
+ * split the rest. A stop counts the same whether Google sold it inside one
+ * ticket or the combination joined two tickets at the hub.
+ *
+ * Big on purpose, and judged against the other results like price is: the
+ * result with the fewest stops, even at the worst price and hours in the set,
+ * still outranks the one with the most stops at the best price and hours.
+ */
+export const STOP_WEIGHT = 0.6;
+
+/**
+ * How good one journey (one direction of one group) is for its stop count:
+ * index 0 is non-stop, 1 one stop, and anything beyond the list scores 0.
+ */
+export const STOP_SCORES = [1, 0.25];
 
 /** Smallest a floating result window may be dragged down to, in pixels. */
 export const MIN_FLOAT_WIDTH = 320;

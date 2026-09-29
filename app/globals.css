@@ -4,9 +4,14 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ── Base / Light ─────────────────────────────────────────── */
+/* Toned down a step from pure white: a greyer page, off-white cards, and the
+   lightest grey kept just below the cards so hovers still show. */
 :root {
-  --background: #f3f4f6;
+  --background: #e8e9ed;
   --foreground: #1c1917;
+
+  --color-white: #f7f7f9;
+  --color-gray-50: #f0f1f4;
 }
 
 @theme inline {
@@ -46,50 +51,49 @@ body {
 
 
 /* ── Dark ─────────────────────────────────────────────────── */
+/* VS Code's Dark+ palette: neutral greys, no tint. The page is the editor
+   background, cards the side panels, borders the panel edges. */
 .dark {
   color-scheme: dark;
-  --background: oklch(0.10 0.018 264);
-  --foreground: oklch(0.96 0.005 264);
+  --background: #1e1e1e;
+  --foreground: #cccccc;
 
-  --color-white: oklch(0.13 0.022 264);
-  --color-gray-50: oklch(0.13 0.022 264);
-  --color-gray-100: oklch(0.19 0.028 264);
-  --color-gray-200: oklch(0.26 0.032 261);
-  --color-gray-300: oklch(0.35 0.030 260);
-  --color-gray-400: oklch(0.45 0.024 259);
-  --color-gray-500: oklch(0.55 0.018 264);
-  --color-gray-600: oklch(0.66 0.015 264);
-  --color-gray-700: oklch(0.77 0.011 262);
-  --color-gray-800: oklch(0.87 0.007 264);
-  --color-gray-900: oklch(0.93 0.004 264);
-  --color-gray-950: oklch(0.97 0.002 261);
+  --color-white: #252526;
+  --color-gray-50: #252526;
+  --color-gray-100: #2d2d30;
+  --color-gray-200: #3c3c3c;
+  --color-gray-300: #474747;
+  --color-gray-400: #6e6e6e;
+  --color-gray-500: #8b8b8b;
+  --color-gray-600: #9d9d9d;
+  --color-gray-700: #bbbbbb;
+  --color-gray-800: #cccccc;
+  --color-gray-900: #d4d4d4;
+  --color-gray-950: #e7e7e7;
 
-  scrollbar-color: oklch(0.28 0.022 264) transparent;
+  scrollbar-color: #4f4f4f transparent;
   scrollbar-width: thin;
 }
 
 .dark body {
-  background-color: oklch(0.10 0.018 264);
-  background-image: radial-gradient(ellipse 80% 40% at 50% -5%,
-      oklch(0.17 0.055 258 / 0.7) 0%,
-      transparent 100%);
+  background-color: #1e1e1e;
 }
 
 .dark ::selection {
-  background-color: oklch(0.56 0.20 264 / 0.40);
+  background-color: #264f78;
 }
 
 .dark ::-webkit-scrollbar-track {
-  background: oklch(0.13 0.022 264);
+  background: #1e1e1e;
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background: oklch(0.28 0.022 264);
+  background: #4f4f4f;
   border-radius: 99px;
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.38 0.028 264);
+  background: #646464;
 }
 
 
