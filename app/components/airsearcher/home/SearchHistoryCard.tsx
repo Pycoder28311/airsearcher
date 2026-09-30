@@ -12,7 +12,7 @@ import {
 import { CURRENCY } from "@/lib/airsearcher/config/constants";
 import { describeTripLength } from "@/lib/airsearcher/queryPlan";
 import { daysBetween, formatAge, formatDate } from "@/lib/airsearcher/time";
-import { gatheredFlightsOf, isStale, type StoredSearch } from "@/lib/airsearcher/storage";
+import { gatheredFlightsOf, isStale, staleReason, type StoredSearch } from "@/lib/airsearcher/storage";
 import { cityName } from "@/data/places";
 import { mergedDestinations, type SearchQuery } from "@/lib/airsearcher/types";
 import { useState } from "react";
@@ -114,7 +114,7 @@ export default function SearchHistoryCard({
         size="very small"
         value={
           entry.resultsRemoved
-            ? "Results removed · older than a day"
+            ? `Results removed · ${staleReason(entry, now)}`
             : `${arrangements.length} result${arrangements.length === 1 ? "" : "s"}${
                 cheapest !== null ? ` · from ${cheapest} ${CURRENCY}` : ""
               }`

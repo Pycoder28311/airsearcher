@@ -34,6 +34,8 @@ import {
 import AvoidAirportsGroup from "./groups/AvoidAirportsGroup";
 import HourPreferencesGroup from "./groups/HourPreferencesGroup";
 import ScoreWeightsGroup from "./groups/ScoreWeightsGroup";
+import TripLengthGroup, { type TripLengthProps } from "./groups/TripLengthGroup";
+import CityChoice from "../common/CityChoice";
 import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
 import TimesGroup from "./groups/TimesGroup";
 import { pricePerHeadOf } from "@/lib/airsearcher/grouping";
@@ -57,6 +59,14 @@ export default function FilterSidebar({
   onPreferencesChange,
   arrangements,
   roundTripSearch,
+  cities,
+  arriveCity,
+  leaveCity,
+  showLeave,
+  buildingOpenJaw,
+  onArriveChange,
+  onLeaveChange,
+  tripLength,
 }: {
   open: boolean;
   onClose: () => void;
@@ -67,6 +77,20 @@ export default function FilterSidebar({
   arrangements: Arrangement[];
   /** Whether the search found ways back; a one-way search has nothing to switch between. */
   roundTripSearch: boolean;
+  /** The search's destination cities with results; the choice shows only with two or more. */
+  cities: string[];
+  /** The city to arrive in, or null for any. */
+  arriveCity: string | null;
+  /** The city the way back leaves from (open jaw), or null for any. */
+  leaveCity: string | null;
+  /** Whether there is a way back to choose a city for. */
+  showLeave: boolean;
+  /** True while trips that come home from another city are being built. */
+  buildingOpenJaw: boolean;
+  onArriveChange: (city: string | null) => void;
+  onLeaveChange: (city: string | null) => void;
+  /** Other trip lengths rebuilt from the saved flights; absent when the search can't offer them. */
+  tripLength?: TripLengthProps;
 }) {
   // Return-only controls need a way back: a round-trip search, not shown one way.
   const isRoundTrip = roundTripSearch && filters.type === "round-trip";
@@ -119,6 +143,21 @@ export default function FilterSidebar({
         }`}
       >
         <div className={`flex flex-col bg-white ${border} ${radiusBig} p-4`}>
+          {/* Floats over the filters while several trip lengths are chosen, so a
+              multi-selection is never missed; takes no room of its own. */}
+          {(tripLength?.value?.length ?? 0) > 1 && (
+            <div className="sticky top-20 z-10 flex h-0 justify-end">
+              <Button
+                styleType="secondary"
+                onClick={() =>
+                  document.getElementById("trip-length-filter")?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+                className="-mt-2 -mr-2 h-fit rounded-full! px-3! py-1! shadow-sm"
+              >
+                <Text size="very small" value={`${tripLength?.value?.length} lengths selected`} />
+              </Button>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Text size="medium" value="Filters" className="font-semibold text-gray-900" />
@@ -152,6 +191,43 @@ export default function FilterSidebar({
             </FilterGroup>
           )}
 
+          {cities.length > 1 && (
+            <FilterGroup
+              title="Destination"
+              defaultOpen
+              onReset={
+                arriveCity !== null || leaveCity !== null
+                  ? () => {
+                      onArriveChange(null);
+                      onLeaveChange(null);
+                    }
+                  : undefined
+              }
+            >
+              <div className="flex flex-col gap-1.5">
+                <Text size="very small" value="Arrive in" className="text-gray-600" />
+                <CityChoice cities={cities} value={arriveCity} onChange={onArriveChange} />
+              </div>
+              {showLeave && (
+                <div className="flex flex-col gap-1.5">
+                  <Text size="very small" value="Leave from" className="text-gray-600" />
+                  <CityChoice cities={cities} value={leaveCity} onChange={onLeaveChange} />
+                </div>
+              )}
+              <Text
+                size="very small"
+                value={
+                  buildingOpenJaw
+                    ? "Adding trips that come home from another city…"
+                    : showLeave
+                      ? "Pick different cities to fly into one and home from the other."
+                      : ""
+                }
+                className="text-gray-500"
+              />
+            </FilterGroup>
+          )}
+
           <FilterGroup title="Stops" defaultOpen topRight={scope("stops")} onReset={reset("stops")}>
             <StopsGroup {...groupProps} />
           </FilterGroup>
@@ -168,6 +244,17 @@ export default function FilterSidebar({
           >
             <AirlinesGroup {...groupProps} airlines={airlines} />
           </FilterGroup>
+
+          {tripLength && (
+            <div id="trip-length-filter" className="scroll-mt-24">
+              <FilterGroup
+                title="Trip length"
+                onReset={tripLength.value !== null ? tripLength.onReset : undefined}
+              >
+                <TripLengthGroup {...tripLength} />
+              </FilterGroup>
+            </div>
+          )}
 
           <FilterGroup title="Departure & arrival times" topRight={scope("times")} onReset={reset("times")}>
             <TimesGroup filters={filters} onChange={onChange} isRoundTrip={isRoundTrip} />

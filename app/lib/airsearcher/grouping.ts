@@ -282,6 +282,8 @@ export function asOneWay(arrangements: Arrangement[]): Arrangement[] {
       const legs = arrangement.legs.map((leg) => ({ ...leg, return: null }));
       return {
         ...arrangement,
+        // Without the way back there is no second city to come home from.
+        returnDestination: undefined,
         returnDate: null,
         legs,
         totals: totalsOf(legs, arrangement.gatheringAirport),
@@ -376,6 +378,11 @@ export interface BuildArrangementsArgs {
   allow: RoutingAllowance;
   /** Only arrangements where every flight is on one airline. */
   sameAirline?: boolean;
+  /**
+   * Open jaw: the airport the way back leaves from, when it isn't the
+   * destination (into Venice, home from Florence). Absent means the same one.
+   */
+  returnFrom?: { cityId: string; airport: AirportCode };
 }
 
 /**
@@ -449,6 +456,9 @@ export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
   const date = args.departureDate;
   const returnDate = args.returnDate;
   const dest = destination.airport;
+  // Open jaw: the way back leaves from another airport.
+  const back = args.returnFrom?.airport ?? dest;
+  const openJaw = back !== dest && returnDate !== null ? args.returnFrom : undefined;
   const direct = (direction: Journey["direction"], main: NormalizedFlight): Journey => ({
     direction,
     routing: "direct",
@@ -467,7 +477,7 @@ export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
       ? topFlights(pool[poolKey(hub, dest, date)])
       : [null];
     if (mainsOut.length === 0) continue;
-    const backs = gathering && returnDate ? topFlights(pool[poolKey(dest, hub, returnDate)]) : [];
+    const backs = gathering && returnDate ? topFlights(pool[poolKey(back, hub, returnDate)]) : [];
     const mainsBack: (NormalizedFlight | null)[] = backs.length > 0 ? backs : [null];
 
     const candidates = new Map<string, Arrangement>();
@@ -492,7 +502,7 @@ export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
           if (returnDate) {
             let options: Journey[];
             if (airport === hub && gathering) options = mainBack ? [direct("return", mainBack)] : [];
-            else if (!gathers) options = topFlights(pool[poolKey(dest, airport, returnDate)]).map((f) => direct("return", f));
+            else if (!gathers) options = topFlights(pool[poolKey(back, airport, returnDate)]).map((f) => direct("return", f));
             else if (mainBack) {
               // Coming back the main flight lands first; a feeder leaving too
               // soon after it cannot be caught.
@@ -537,12 +547,13 @@ export function buildArrangements(args: BuildArrangementsArgs): Arrangement[] {
             .map((l) => `${l.origin}${l.outbound.routing === "gather" ? ">" : "-"}`)
             .join("");
           const flights = legs.flatMap(legFlights).map(flightKey).join("|");
-          const id = `${dest}:${date}:${shape}:${shortHash(flights)}`;
+          const id = `${openJaw ? `${dest}>${back}` : dest}:${date}:${shape}:${shortHash(flights)}`;
           if (candidates.has(id)) continue;
 
           candidates.set(id, {
             id,
             destination,
+            ...(openJaw ? { returnDestination: openJaw } : {}),
             gatheringAirport: hub,
             departureDate: date,
             returnDate,

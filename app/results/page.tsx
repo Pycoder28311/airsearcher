@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
@@ -30,10 +30,13 @@ import {
 } from "@/lib/airsearcher/grouping";
 import { applyScopedFilters, explainEmpty } from "@/lib/airsearcher/filtering";
 import type { DatePair } from "@/lib/airsearcher/priceGrid";
-import { usesSerpApi, weightsOf } from "@/lib/airsearcher/search";
+import { buildOpenJawArrangements, usesSerpApi, weightsOf } from "@/lib/airsearcher/search";
 import {
   findSearchById,
+  gatheredFlightsOf,
+  staleReason,
   isStale,
+  loadGatheredFlights,
   loadFilters,
   loadPreferences,
   saveFilters,
@@ -41,8 +44,27 @@ import {
   type StoredPreferences,
   type StoredSearch,
 } from "@/lib/airsearcher/storage";
-import { storageError, storageReady } from "@/lib/airsearcher/storageClient";
-import { daysBetween } from "@/lib/airsearcher/time";
+import { flushStorage, storageError, storageReady } from "@/lib/airsearcher/storageClient";
+import { daysBetween, formatDate } from "@/lib/airsearcher/time";
+import {
+  destinationsOf,
+  returnPlaceOf,
+  type Arrangement,
+  type FlightRecord,
+  type SearchQuery,
+} from "@/lib/airsearcher/types";
+import {
+  lengthOptions,
+  nightsOf,
+  rebuildForLength,
+  searchedLengths,
+  withLength,
+} from "@/lib/airsearcher/tripLength";
+import { canExtend, extendUrl, searchedIds } from "@/lib/airsearcher/extend";
+import ExtendDatesModal from "@/components/airsearcher/calendar/ExtendDatesModal";
+import { useApp } from "@/framework/ui/context/AppContext";
+import { useRouter } from "next/navigation";
+import { candidateDates, describeTripLength } from "@/lib/airsearcher/queryPlan";
 
 /** Which API's results the page is showing. */
 type ResultSource = "serpapi" | "travelpayouts" | "google-curl";
@@ -91,6 +113,8 @@ function priceGridFor(entry: StoredSearch, source: ResultSource) {
 function ResultsView() {
   const params = useSearchParams();
   const { showAlert } = useAlert();
+  const { openModal, closeModal } = useApp();
+  const router = useRouter();
   const floating = useFloatingWindows();
 
   const searchId = params.get("search");
@@ -121,6 +145,26 @@ function ResultsView() {
   // Page state only, never FilterState: a date-pair pick is a view of this one
   // result set and must not leak into the next search.
   const [selectedPair, setSelectedPair] = useState<DatePair | null>(null);
+  // On a multi-city search, the city to arrive in and the one to come home
+  // from; null is any. Page state like the pair: city ids differ per search.
+  const [arriveCity, setArriveCity] = useState<string | null>(null);
+  const [leaveCity, setLeaveCity] = useState<string | null>(null);
+  /** Open-jaw results built from the saved flights, for searches saved before they were. */
+  const [openJaw, setOpenJaw] = useState<{ id: string; arrangements: Arrangement[] } | null>(null);
+  const [buildingJaw, setBuildingJaw] = useState(false);
+  // Trip lengths chosen in the sidebar, several at once; null is the search's own.
+  const [nights, setNights] = useState<number[] | null>(null);
+  /** Results rebuilt from the saved flights, per length, for one search. */
+  const [rebuilt, setRebuilt] = useState<{ id: string; byLength: Map<number, Arrangement[]> } | null>(null);
+  const [building, setBuilding] = useState(false);
+  /** The saved flights, fetched once per search when first needed. */
+  const [saved, setSaved] = useState<{ id: string; records: FlightRecord[] } | null>(null);
+  /** The lengths asked for last, so an older rebuild never overwrites a newer one. */
+  const latestLengths = useRef<number[] | null>(null);
+  // Departure days narrowed inside what was searched; page state, never saved.
+  const [viewRange, setViewRange] = useState<{ start: string; end: string } | null>(null);
+  /** The "change dates" calendar while open, with the trip lengths it adds. */
+  const [datesModal, setDatesModal] = useState<{ extraNights: number[] } | null>(null);
 
   /* Reading saved data is exactly the "subscribe to an external system" case
      effects exist for: it is loaded from the local database once the page is
@@ -149,9 +193,7 @@ function ResultsView() {
       if (found && isStale(found)) {
         showAlert(
           "Warning",
-          found.kind === "google-curl"
-            ? "These results are more than a day old. Copy fresh cURLs from Google Flights to recalculate them."
-            : "These results are more than a day old and should be recalculated with SerpApi.",
+          `These prices are ${staleReason(found)}. Run the search again from the home page for current prices.`,
           { durationMs: 8000 },
         );
       }
@@ -169,14 +211,67 @@ function ResultsView() {
   // "One way" in the sidebar shows a round-trip search's results without the way back.
   const oneWay = entry?.query.tripType === "round-trip" && filters?.type === "one-way";
 
+  // Another length needs the saved flights, which only the search's own source has.
+  const flightsSource: ResultSource = entry?.kind === "google-curl" ? "google-curl" : "serpapi";
+  const lengths = useMemo(
+    () =>
+      entry && rangeSearch && activeSource === flightsSource && !oneWay && gatheredFlightsOf(entry) > 0
+        ? lengthOptions(entry.query)
+        : [],
+    [entry, rangeSearch, activeSource, flightsSource, oneWay],
+  );
+  const searched = useMemo(() => (entry ? searchedLengths(entry.query) : []), [entry]);
+  const extendCheck = entry ? canExtend(entry, now ?? undefined) : null;
+  /** Whether "Edit search" opens the date calendar (or, when outdated, says why it can't). */
+  const extendable = extendCheck !== null && (extendCheck.ok || extendCheck.reason === "stale");
+  /** The chosen lengths, when they replace the search's own. */
+  const chosenLengths = lengths.length > 0 ? nights : null;
+
   // The only thing the tab changes: which API's arrangements feed the pipeline.
-  const arrangements = useMemo(() => {
+  const allCities = useMemo(() => {
     if (!entry) return [];
+    // Open jaws built from the saved flights join an older search's results.
+    const stored = [
+      ...arrangementsFor(entry, activeSource),
+      ...(openJaw?.id === entry.id && activeSource === flightsSource ? openJaw.arrangements : []),
+    ];
+    // A length the search ran for comes from its saved results; any other was
+    // rebuilt from its saved flights.
+    const byLength = rebuilt?.id === entry.id ? rebuilt.byLength : null;
+    const source = chosenLengths
+      ? chosenLengths.flatMap((n) =>
+          searched.includes(n) ? stored.filter((a) => nightsOf(a) === n) : (byLength?.get(n) ?? []),
+        )
+      : stored;
     // Searches saved before duplicates were removed can still hold them, and
     // older ones results where a group had no way home.
-    const stored = uniqueArrangements(arrangementsFor(entry, activeSource).filter(everyoneGetsHome));
-    return oneWay ? asOneWay(stored) : stored;
-  }, [entry, activeSource, oneWay]);
+    let list = uniqueArrangements(source.filter(everyoneGetsHome));
+    if (viewRange) {
+      list = list.filter((a) => a.departureDate >= viewRange.start && a.departureDate <= viewRange.end);
+    }
+    return oneWay ? asOneWay(list) : list;
+  }, [entry, activeSource, flightsSource, openJaw, oneWay, chosenLengths, searched, rebuilt, viewRange]);
+
+  /** The destination cities with results, in the order the search named them. */
+  const cities = useMemo(() => {
+    const found = new Set(allCities.flatMap((a) => [a.destination.cityId, returnPlaceOf(a).cityId]));
+    const named = entry ? destinationsOf(entry.query).map((d) => d.cityId) : [];
+    return [...new Set([...named, ...found])].filter((id) => found.has(id));
+  }, [allCities, entry]);
+  // A city from another tab or source that has no results here means any.
+  const activeArrive = arriveCity !== null && cities.includes(arriveCity) ? arriveCity : null;
+  const activeLeave = leaveCity !== null && cities.includes(leaveCity) && !oneWay ? leaveCity : null;
+  const anyCity = activeArrive !== null || activeLeave !== null;
+
+  const arrangements = useMemo(
+    () =>
+      allCities.filter(
+        (a) =>
+          (activeArrive === null || a.destination.cityId === activeArrive) &&
+          (activeLeave === null || returnPlaceOf(a).cityId === activeLeave),
+      ),
+    [allCities, activeArrive, activeLeave],
+  );
 
   /**
    * The whole results pipeline: filter, re-score against the surviving set,
@@ -225,6 +320,154 @@ function ResultsView() {
     saveFilters(next);
   };
 
+  /** The saved flights of this search, fetched the first time they're needed. */
+  const ensureSavedFlights = async (): Promise<FlightRecord[]> => {
+    if (!entry) return [];
+    if (saved?.id === entry.id) return saved.records;
+    const records = await loadGatheredFlights(entry);
+    setSaved({ id: entry.id, records });
+    return records;
+  };
+
+  /**
+   * Shows these trip lengths together. A length the search ran for uses its
+   * saved results; any other is rebuilt once from the saved flights. None, or
+   * exactly the search's own, goes back to the saved results.
+   */
+  const chooseLengths = async (next: number[] | null) => {
+    if (!entry || !filters || !preferences) return;
+    const sorted = next ? [...new Set(next)].sort((a, b) => a - b) : [];
+    const own = sorted.length === 0 || (searched.length > 0 && sorted.join() === searched.join());
+    const target = own ? null : sorted;
+    latestLengths.current = target;
+    setSelectedPair(null);
+    setNights(target);
+    const cache = rebuilt?.id === entry.id ? rebuilt.byLength : new Map<number, Arrangement[]>();
+    const todo = (target ?? []).filter((n) => !searched.includes(n) && !cache.has(n));
+    if (todo.length === 0) {
+      setBuilding(false);
+      return;
+    }
+    setBuilding(true);
+    const records = await ensureSavedFlights();
+    const byLength = new Map(cache);
+    for (const n of todo) {
+      // Lets "Building…" show, and a newer choice win, between the rebuilds.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (latestLengths.current !== target) return;
+      byLength.set(n, rebuildForLength(entry.query, { ...preferences.ranking, weights: weightsOf(filters) }, records, n));
+    }
+    if (latestLengths.current !== target) return;
+    setRebuilt({ id: entry.id, byLength });
+    setBuilding(false);
+  };
+
+  const toggleLength = (n: number) => {
+    const current = nights ?? searched;
+    void chooseLengths(current.includes(n) ? current.filter((x: number) => x !== n) : [...current, n]);
+  };
+
+  /** Explains why the calendar can't open, with the way out. */
+  const showCantExtend = (reason: "stale" | "unsupported") =>
+    openModal(
+      <div className="flex flex-col gap-4">
+        <Text
+          size="small"
+          value={
+            reason === "stale"
+              ? "These prices are outdated, so dates can't be added to this search. Run a new search from the home page for current prices."
+              : "Dates can only be added to a date-range Google Flights search that still has its flights. Run a new search from the home page."
+          }
+          className="text-gray-700"
+        />
+        <div className="flex justify-end gap-2">
+          <Button styleType="tertiary" onClick={closeModal}>
+            Close
+          </Button>
+          <Button styleType="primary" href="/">
+            New search
+          </Button>
+        </div>
+      </div>,
+      reason === "stale" ? "Prices are outdated" : "Can't add dates",
+    );
+
+  /** Opens the "change dates" calendar, adding these trip lengths. */
+  const openDates = (extraNights: number[] = []) => {
+    if (!entry) return;
+    const check = canExtend(entry);
+    if (!check.ok) return showCantExtend(check.reason);
+    setDatesModal({ extraNights });
+    void ensureSavedFlights();
+  };
+
+  /** A length the saved flights can't answer on any day. */
+  const askToSearch = (n: number) =>
+    openModal(
+      <div className="flex flex-col gap-4">
+        <Text
+          size="small"
+          value={`There are no flights for ${n} night${n === 1 ? "" : "s"} yet: none of their return days were searched. A search for the missing dates must happen to combine the results.`}
+          className="text-gray-700"
+        />
+        <div className="flex justify-end gap-2">
+          <Button styleType="tertiary" onClick={closeModal}>
+            Cancel
+          </Button>
+          <Button
+            styleType="primary"
+            onClick={() => {
+              closeModal();
+              openDates([n]);
+            }}
+          >
+            Choose dates
+          </Button>
+        </div>
+      </div>,
+      "A search is needed",
+    );
+
+  /** The search as the chart and grid show it: narrowed, at the chosen lengths, one way. */
+  const viewQuery = (query: SearchQuery): SearchQuery => {
+    let shown = viewRange ? { ...query, dateRange: viewRange } : query;
+    if (chosenLengths) {
+      shown = { ...withLength(shown, chosenLengths[0]), tripLengths: chosenLengths.length > 1 ? chosenLengths : null };
+    }
+    // Seen one way, there are no return dates to lay out a grid by.
+    return oneWay ? { ...shown, tripType: "one-way", returnDate: null } : shown;
+  };
+
+  /**
+   * Builds the open-jaw results of a search saved before they were built (it
+   * has none stored), once, from its saved flights.
+   */
+  const ensureOpenJaw = async () => {
+    if (!entry || !filters || !preferences || cities.length < 2 || oneWay) return;
+    if (openJaw?.id === entry.id || activeSource !== flightsSource || gatheredFlightsOf(entry) === 0) return;
+    if (arrangementsFor(entry, activeSource).some((a) => a.returnDestination)) return;
+    setBuildingJaw(true);
+    const records = await ensureSavedFlights();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const built = buildOpenJawArrangements(
+      entry.query,
+      { ...preferences.ranking, weights: weightsOf(filters) },
+      records,
+    );
+    setOpenJaw({ id: entry.id, arrangements: built });
+    setBuildingJaw(false);
+  };
+
+  /** The city to arrive in, or to come home from; null is any. */
+  const chooseCity = (side: "arrive" | "leave", next: string | null) => {
+    // A date pair picked for one city may have nothing in another.
+    setSelectedPair(null);
+    if (side === "arrive") setArriveCity(next);
+    else setLeaveCity(next);
+    // Picking cities is when trips that come home from elsewhere matter.
+    if (next !== null) void ensureOpenJaw();
+  };
+
   const updatePreferences = (next: StoredPreferences) => {
     setPreferences(next);
     savePreferences(next);
@@ -263,7 +506,7 @@ function ResultsView() {
         <Text size="medium" value={entry.label} className="font-semibold text-gray-900" />
         <Text
           size="small"
-          value="This search is more than a day old, so its results were removed. Run it again from the home page for current prices."
+          value={`This search's results were removed: ${staleReason(entry, now ?? undefined)}. Run it again from the home page for current prices.`}
           className="text-gray-500"
         />
         <Button styleType="primary" href="/">
@@ -289,15 +532,38 @@ function ResultsView() {
         onPreferencesChange={updatePreferences}
         arrangements={arrangements}
         roundTripSearch={entry.query.tripType === "round-trip"}
+        cities={cities}
+        arriveCity={activeArrive}
+        leaveCity={activeLeave}
+        showLeave={entry.query.tripType === "round-trip" && !oneWay}
+        buildingOpenJaw={buildingJaw}
+        onArriveChange={(next) => chooseCity("arrive", next)}
+        onLeaveChange={(next) => chooseCity("leave", next)}
+        tripLength={
+          lengths.length > 0
+            ? {
+                options: lengths,
+                searched,
+                searchedLabel: describeTripLength(entry.query) ?? "",
+                value: chosenLengths,
+                building,
+                totalDays: candidateDates(entry.query).length,
+                onToggle: toggleLength,
+                onReset: () => void chooseLengths(null),
+                onNoData: askToSearch,
+                onSearchMissing: openDates,
+              }
+            : undefined
+        }
       />
 
       <section className="flex min-w-0 flex-1 flex-col gap-4">
         <ResultsHeader
           entry={entry}
           now={now}
-          shown={visible.length}
-          total={arrangements.length}
           stale={isStale(entry, now)}
+          // The calendar where it can open; an outdated search explains why not.
+          onEditDates={extendable ? () => openDates() : undefined}
         />
 
         {sources.length > 1 && (
@@ -358,11 +624,15 @@ function ResultsView() {
 
         {rangeSearch && (
           <DateRangeView
-            // Seen one way, there are no return dates to lay out a grid by.
-            query={oneWay ? { ...entry.query, tripType: "one-way", returnDate: null } : entry.query}
+            query={viewQuery(entry.query)}
             arrangements={visible}
             stored={arrangements}
-            floor={priceGridFor(entry, activeSource)}
+            // The saved floor covers every city, so it only fits the whole search.
+            floor={
+              !anyCity && chosenLengths === null && viewRange === null
+                ? priceGridFor(entry, activeSource)
+                : undefined
+            }
             selectedPair={selectedPair}
             onSelectPair={setSelectedPair}
           />
@@ -372,9 +642,39 @@ function ResultsView() {
           className={`flex flex-wrap items-center gap-2 border-y ${grayMid.border} py-2`}
         >
           <SidebarToggle open={sidebarOpen} onToggle={toggleSidebar} filters={filters} />
-          {anyGroupChanged(filters) && (
-            <Button styleType="tertiary" onClick={() => updateFilters(resetFilters(filters))}>
+          {/* Every result the list holds with the current filters (and date pair),
+              not just the batch drawn so far. */}
+          <Text
+            size="small"
+            value={`${selectedOnly.length} result${selectedOnly.length === 1 ? "" : "s"}`}
+            className="tabular-nums text-gray-600"
+          />
+          {(anyGroupChanged(filters) || anyCity || nights !== null || viewRange !== null) && (
+            <Button
+              styleType="tertiary"
+              onClick={() => {
+                setArriveCity(null);
+                setLeaveCity(null);
+                void chooseLengths(null);
+                setViewRange(null);
+                updateFilters(resetFilters(filters));
+              }}
+            >
               <Text icon="reset" size="small" value="Reset filters" />
+            </Button>
+          )}
+          {viewRange && (
+            <Button
+              styleType="tertiary"
+              onClick={() => setViewRange(null)}
+              className={`gap-1.5 border ${colorSecondary.border}`}
+            >
+              <Text
+                size="very small"
+                value={`Leaving ${formatDate(viewRange.start)} – ${formatDate(viewRange.end)}`}
+                className={colorSecondary.text}
+              />
+              <Text icon="close" size="very small" className={colorSecondary.text} />
             </Button>
           )}
           {selectedPair && (
@@ -441,6 +741,31 @@ function ResultsView() {
           />
         )}
       </section>
+
+      {datesModal && entry.query.dateRange && (
+        <ExtendDatesModal
+          open
+          onClose={() => setDatesModal(null)}
+          entry={entry}
+          have={saved?.id === entry.id ? searchedIds(saved.records) : null}
+          initialRange={viewRange ?? entry.query.dateRange}
+          extraNights={datesModal.extraNights}
+          onNarrow={(range) => {
+            const full = entry.query.dateRange;
+            setSelectedPair(null);
+            setViewRange(full && range.start === full.start && range.end === full.end ? null : range);
+            // Lengths added without a search are already covered: show them.
+            if (datesModal.extraNights.length > 0) {
+              void chooseLengths([...(nights ?? searched), ...datesModal.extraNights]);
+            }
+          }}
+          onSearch={(range) =>
+            void flushStorage().then(() =>
+              router.push(extendUrl({ searchId: entry.id, range, nights: datesModal.extraNights })),
+            )
+          }
+        />
+      )}
 
       <FloatingLayer
         boxes={floating.boxes}

@@ -5,7 +5,7 @@ import Text from "@/framework/ui/iconText/Text";
 import { colorSecondary, grayLight, radius } from "@/config/theme";
 import { describeTripLength } from "@/lib/airsearcher/queryPlan";
 import { formatAge, formatDate } from "@/lib/airsearcher/time";
-import type { StoredSearch } from "@/lib/airsearcher/storage";
+import { staleReason, type StoredSearch } from "@/lib/airsearcher/storage";
 import { cityName } from "@/data/places";
 import { mergedDestinations } from "@/lib/airsearcher/types";
 
@@ -17,15 +17,14 @@ import { mergedDestinations } from "@/lib/airsearcher/types";
 export default function ResultsHeader({
   entry,
   now,
-  shown,
-  total,
   stale,
+  onEditDates,
 }: {
   entry: StoredSearch;
   now: number;
-  shown: number;
-  total: number;
   stale: boolean;
+  /** Opens the "change dates" calendar; absent where the search can't be extended. */
+  onEditDates?: () => void;
 }) {
   const { query } = entry;
   const destinations = mergedDestinations(query);
@@ -66,9 +65,16 @@ export default function ResultsHeader({
             .join(" · ")}
           className="text-gray-500"
         />
-        <Button styleType="underline" href="/" className="ml-auto">
-          <Text size="small" value="Edit search" />
-        </Button>
+        {/* Opens the date calendar where the search can be extended; otherwise the home page. */}
+        {onEditDates ? (
+          <Button styleType="underline" onClick={onEditDates} className="ml-auto">
+            <Text size="small" value="Edit search" />
+          </Button>
+        ) : (
+          <Button styleType="underline" href="/" className="ml-auto">
+            <Text size="small" value="Edit search" />
+          </Button>
+        )}
       </div>
 
       <Text size="small" value={dates} className="text-gray-700" />
@@ -80,7 +86,7 @@ export default function ResultsHeader({
 
       <Text
         size="very small"
-        value={`Showing ${shown} of ${total} arrangement${total === 1 ? "" : "s"} · saved ${formatAge(entry.savedAt, now)}`}
+        value={`Saved ${formatAge(entry.savedAt, now)}`}
         className="text-gray-400"
       />
 
@@ -89,7 +95,7 @@ export default function ResultsHeader({
           <Text
             size="very small"
             icon="alert"
-            value="These results are more than a day old and should be recalculated with SerpApi."
+            value={`These prices are ${staleReason(entry, now)}. Run the search again for current prices.`}
             className={colorSecondary.text}
           />
         </div>

@@ -6,6 +6,7 @@ import Text from "@/framework/ui/iconText/Text";
 import { colorSecondary, grayMid } from "@/config/theme";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import type { SearchQuery } from "@/lib/airsearcher/types";
+import type { SearchExtension } from "@/lib/airsearcher/extend";
 import CurlCoverage from "./CurlCoverage";
 import CurlRow from "./CurlRow";
 import SearchLinks from "./SearchLinks";
@@ -34,12 +35,15 @@ export default function CurlRequestsPanel({
   disabled,
   onRunningChange,
   onFinished,
+  extension,
 }: {
   query: SearchQuery;
   /** True while the main search is running. */
   disabled: boolean;
   onRunningChange: (running: boolean) => void;
   onFinished: (entry: StoredSearch) => void;
+  /** Set when the run adds dates to a saved search. */
+  extension?: SearchExtension;
 }) {
   const curl = useCurlRun(query, onFinished);
   const [sessionRunning, setSessionRunning] = useState(false);
@@ -59,6 +63,7 @@ export default function CurlRequestsPanel({
           disabled={disabled || curl.running}
           onRunningChange={setSessionRunning}
           onFinished={onFinished}
+          extension={extension}
         />
       </div>
 

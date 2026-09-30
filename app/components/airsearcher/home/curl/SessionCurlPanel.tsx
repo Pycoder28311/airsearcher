@@ -12,6 +12,7 @@ import InfoHint from "../../common/InfoHint";
 import { dateError } from "../DateField";
 import { RunStatus } from "./CurlRow";
 import { useSessionRun } from "./useSessionRun";
+import type { SearchExtension } from "@/lib/airsearcher/extend";
 
 /** What stops the top inputs from making a search — same rules as SearchPanel. */
 function inputsError(query: SearchQuery): string | null {
@@ -94,14 +95,17 @@ export default function SessionCurlPanel({
   disabled,
   onRunningChange,
   onFinished,
+  extension,
 }: {
   query: SearchQuery;
   /** True while another search or run is in progress. */
   disabled: boolean;
   onRunningChange: (running: boolean) => void;
   onFinished: (entry: StoredSearch) => void;
+  /** Set when this run adds dates to a saved search. */
+  extension?: SearchExtension;
 }) {
-  const session = useSessionRun(query, onFinished);
+  const session = useSessionRun(query, onFinished, extension);
   const { openModal, closeModal } = useApp();
   const listRef = useRef<HTMLUListElement | null>(null);
 

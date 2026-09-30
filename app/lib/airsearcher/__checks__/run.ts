@@ -26,7 +26,9 @@ import {
   planRequestBatches,
   planSearches,
   candidateDates,
+  describeTripLength,
   returnDatesFor,
+  searchId,
 } from "@/lib/airsearcher/queryPlan";
 import { eachDayInRange, extendRange } from "@/lib/airsearcher/time";
 import { costOf, explainCost } from "@/lib/airsearcher/quota";
@@ -45,6 +47,17 @@ import {
   stopsOf,
 } from "@/lib/airsearcher/filtering";
 import { journeyStopCount } from "@/lib/airsearcher/journeyStops";
+import { lengthOptions } from "@/lib/airsearcher/tripLength";
+import {
+  extendedQuery,
+  extendUrl,
+  mergeRecords,
+  missingJobs,
+  missingSearches,
+  parseExtendParams,
+  routesChanged,
+} from "@/lib/airsearcher/extend";
+
 import {
   anyGroupChanged,
   DEFAULT_FILTERS,
@@ -75,6 +88,7 @@ import {
   mergedDestinations,
   stopAirportsOf,
   type Arrangement,
+  type FlightRecord,
   type NormalizedFlight,
   type SearchQuery,
 } from "@/lib/airsearcher/types";
@@ -116,6 +130,104 @@ check("priceIndex scores everything 1 when all prices match", () => {
   assert.equal(priceIndex(null, 100, 300), 0);
   assert.equal(priceIndex(100, 100, 300), 1);
   assert.equal(priceIndex(300, 100, 300), 0);
+});
+
+check("another trip length covers only days whose return day was searched", () => {
+  const base = {
+    destinations: [{ cityId: "it-venice", airports: ["VCE"] }],
+    origins: [{ airport: "ATH", passengers: 1 }],
+    gatheringAirport: "ATH",
+    tripType: "round-trip",
+    dateMode: "advanced",
+    departureDate: null,
+    returnDate: null,
+    dateRange: { start: "2026-11-11", end: "2026-11-28" },
+    tripDurationDays: 7,
+    excludedDates: [],
+    priorityDates: {},
+    sameAirline: true,
+  } as unknown as SearchQuery;
+  const options = lengthOptions(base);
+  const of = (n: number) => options.find((o) => o.nights === n)?.departures ?? [];
+  assert.equal(of(7).length, 18, "the searched length covers every day");
+  // Returns were searched 18 Nov – 5 Dec, so 5 nights starts on 13 Nov, 10 ends on 25 Nov.
+  assert.deepEqual([of(5)[0], of(5).at(-1)], ["2026-11-13", "2026-11-28"]);
+  assert.deepEqual([of(10)[0], of(10).at(-1)], ["2026-11-11", "2026-11-25"]);
+  assert.equal(lengthOptions({ ...base, tripType: "one-way" }).length, 0, "nothing to change one way");
+});
+
+check("a search with several trip lengths comes back after each of them", () => {
+  const q = {
+    destinations: [{ cityId: "it-venice", airports: ["VCE"] }],
+    origins: [{ airport: "ATH", passengers: 1 }],
+    gatheringAirport: "ATH", tripType: "round-trip", dateMode: "advanced",
+    departureDate: null, returnDate: null,
+    dateRange: { start: "2026-11-11", end: "2026-11-28" },
+    tripDurationDays: 7, tripLengths: [10, 7, 5], excludedDates: [], priorityDates: {}, sameAirline: true,
+  } as unknown as SearchQuery;
+  assert.deepEqual(returnDatesFor(q, "2026-11-11"), ["2026-11-16", "2026-11-18", "2026-11-21"]);
+  assert.equal(describeTripLength(q), "5, 7, 10 nights");
+});
+
+check("extending a search needs only the routes and days it lacks", () => {
+  const q = {
+    destinations: [{ cityId: "it-venice", airports: ["VCE"] }],
+    origins: [{ airport: "ATH", passengers: 1 }, { airport: "SKG", passengers: 1 }],
+    gatheringAirport: "ATH", tripType: "round-trip", dateMode: "advanced",
+    departureDate: null, returnDate: null,
+    dateRange: { start: "2026-11-11", end: "2026-11-28" },
+    tripDurationDays: 7, excludedDates: [], priorityDates: {}, sameAirline: true,
+  } as unknown as SearchQuery;
+  const have = new Set(planSearches(q).map(searchId));
+  assert.equal(missingSearches(q, have).length, 0, "the search as it was needs nothing");
+
+  const narrower = extendedQuery(q, { start: "2026-11-14", end: "2026-11-25" });
+  assert.equal(missingJobs(narrower, have).length, 0, "narrowing needs nothing");
+
+  const wider = extendedQuery(q, { start: "2026-11-11", end: "2026-12-02" });
+  const days = (direction: string) =>
+    [...new Set(missingSearches(wider, have).filter((s) => s.direction === direction).map((s) => s.date))].sort();
+  assert.deepEqual(days("outbound"), ["2026-11-29", "2026-11-30", "2026-12-01", "2026-12-02"]);
+  assert.deepEqual(days("return"), ["2026-12-06", "2026-12-07", "2026-12-08", "2026-12-09"]);
+  assert.ok(missingJobs(wider, have).every((job) => job.search.date >= "2026-11-29"));
+
+  const plus10 = extendedQuery(q, q.dateRange!, [10]);
+  assert.deepEqual(plus10.tripLengths, [7, 10]);
+  assert.deepEqual(
+    [...new Set(missingSearches(plus10, have).map((s) => `${s.direction} ${s.date}`))].sort(),
+    ["return 2026-12-06", "return 2026-12-07", "return 2026-12-08"],
+    "10 nights from 26–28 Nov is all that's missing",
+  );
+});
+
+check("merging keeps saved records for routes not searched again", () => {
+  const rec = (id: string, n: number) => ({ id, flights: Array.from({ length: n }) }) as unknown as FlightRecord;
+  const merged = mergeRecords([rec("a", 3), rec("b", 2)], [rec("a", 0), rec("b", 5), rec("c", 4)], new Set(["b", "c"]));
+  const byId = Object.fromEntries(merged.map((r) => [r.id, r.flights.length]));
+  assert.deepEqual(byId, { a: 3, b: 5, c: 4 }, "an empty record for a route not sent never replaces the saved one");
+});
+
+check("the hand-off link to the home page reads back as it was written", () => {
+  const request = { searchId: "search-1-abc", range: { start: "2026-11-11", end: "2026-12-02" }, nights: [10, 15] };
+  assert.deepEqual(parseExtendParams(extendUrl(request).slice(1)), request);
+  assert.equal(parseExtendParams("extend=x&start=2026-12-02&end=2026-11-11"), null, "a backwards range is refused");
+});
+
+check("adding to a search: only new destinations or departure airports make a new one", () => {
+  const q = {
+    destinations: [{ cityId: "it-venice", airports: ["VCE", "TSF"] }],
+    origins: [{ airport: "ATH", passengers: 2 }, { airport: "SKG", passengers: 1 }, { airport: "HER", passengers: 0 }],
+    gatheringAirport: "ATH", tripType: "round-trip", sameAirline: true,
+    dateRange: { start: "2026-11-11", end: "2026-11-28" },
+  } as unknown as SearchQuery;
+  const same = (change: Partial<SearchQuery>) => routesChanged(q, { ...q, ...change } as SearchQuery);
+  assert.equal(same({ sameAirline: false }), false);
+  assert.equal(same({ tripType: "one-way" }), false);
+  assert.equal(same({ dateRange: { start: "2026-11-14", end: "2026-11-20" } }), false);
+  assert.equal(same({ gatheringAirport: "SKG" }), false);
+  assert.equal(same({ origins: [{ airport: "ATH", passengers: 5 }, { airport: "SKG", passengers: 1 }] } as Partial<SearchQuery>), false);
+  assert.equal(same({ origins: [{ airport: "ATH", passengers: 2 }, { airport: "HER", passengers: 1 }] } as Partial<SearchQuery>), true);
+  assert.equal(same({ destinations: [{ cityId: "it-florence", airports: ["FLR"] }] } as Partial<SearchQuery>), true);
 });
 
 check("a section resets on its own, scope included, and leaves the rest", () => {
@@ -935,6 +1047,32 @@ check("weighted above price, results without stops outrank cheaper ones with sto
     byRouting("direct").score > byRouting("gather").score,
     "everyone non-stop outranks a cheaper result with a stop",
   );
+});
+
+check("an open jaw flies into one city and home from another", () => {
+  const pool: FlightPool = {
+    [poolKey("ATH", "STN", OUT)]: [flight("ATH", "STN", `${OUT} 09:00`, `${OUT} 11:00`, 100)],
+    [poolKey("LGW", "ATH", BACK)]: [flight("LGW", "ATH", `${BACK} 12:00`, `${BACK} 16:00`, 80)],
+    [poolKey("STN", "ATH", BACK)]: [],
+  };
+  const base = {
+    origins: [{ airport: "ATH", passengers: 1 }],
+    gatheringAirport: "ATH",
+    destination: { cityId: "uk-london-stn", airport: "STN" },
+    pool,
+    departureDate: OUT,
+    returnDate: BACK,
+    allow: { direct: true, gather: true },
+  };
+  assert.equal(buildArrangements(base).length, 0, "no way home from Stansted itself");
+  const [jaw] = buildArrangements({ ...base, returnFrom: { cityId: "uk-london-lgw", airport: "LGW" } });
+  assert.ok(jaw, "home from Gatwick instead");
+  assert.equal(jaw.destination.airport, "STN");
+  assert.equal(jaw.returnDestination?.airport, "LGW");
+  assert.equal(jaw.legs[0].return?.main.outbound.segments[0].departure.airport, "LGW");
+  assert.equal(jaw.totals.totalPrice, 180);
+  const [oneWay] = asOneWay([jaw]);
+  assert.equal(oneWay.returnDestination, undefined, "one way has no city to come home from");
 });
 
 check("each return is matched to flights from its own return date", () => {

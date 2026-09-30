@@ -8,12 +8,24 @@
  * Nothing else in the codebase may hard-code these values — change them here.
  */
 
+const HOUR_MS = 60 * 60 * 1000;
+
 /**
- * How long a stored result stays reusable before the app says it needs
- * recalculating with SerpApi. This is the "one day" threshold; raise or lower
- * it here and every staleness check follows.
+ * How long a stored result stays current, by how many days remain until its
+ * earliest flight: prices months away barely move in a day, those of flights
+ * next week move within hours. Checked from the top; the first row whose
+ * `daysAhead` the flight reaches applies. Airlines publish no such figures —
+ * these are rules of thumb taking the stricter end of each range, so tune them
+ * here and every staleness check follows.
  */
-export const RESULT_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+export const RESULT_FRESHNESS_BY_DAYS_AHEAD: { daysAhead: number; maxAgeMs: number }[] = [
+  { daysAhead: 90, maxAgeMs: 5 * 24 * HOUR_MS },
+  { daysAhead: 31, maxAgeMs: 2 * 24 * HOUR_MS },
+  { daysAhead: 15, maxAgeMs: 24 * HOUR_MS },
+  { daysAhead: 7, maxAgeMs: 12 * HOUR_MS },
+  { daysAhead: 2, maxAgeMs: 4 * HOUR_MS },
+  { daysAhead: 0, maxAgeMs: 1 * HOUR_MS },
+];
 
 /** How many searches the history keeps before dropping the oldest. */
 export const MAX_SAVED_SEARCHES = 10;
@@ -86,6 +98,12 @@ export const FLOAT_CASCADE_OFFSET = 28;
  * slow to open and to re-sort.
  */
 export const RESULTS_BATCH_SIZE = 30;
+
+/**
+ * Trip lengths the results page offers, 1 to this many nights, whether or not
+ * the saved flights can answer them; the rest lead to searching more dates.
+ */
+export const TRIP_LENGTH_BUTTONS = 15;
 
 /** Currency the mock data quotes prices in. */
 export const CURRENCY = "EUR";

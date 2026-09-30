@@ -6,6 +6,7 @@ import { CURL_MAX_PER_RUN } from "@/lib/airsearcher/config/curl";
 import { requestBrowserRun } from "@/lib/airsearcher/browser/api";
 import { sessionRequestsFor, type GeneratedJob } from "@/lib/airsearcher/curl/generated";
 import { planSchedule, retryDelayMs, scheduleTotalMs, type RunSchedule } from "@/lib/airsearcher/pacing";
+import { missingJobs, searchedIds, sentIds, type SearchExtension } from "@/lib/airsearcher/extend";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import type { FlightRecord, SearchQuery } from "@/lib/airsearcher/types";
 import { finishRun, runSequence, type RowStatus } from "./curlRunner";
@@ -15,8 +16,15 @@ import { finishRun, runSequence, type RowStatus } from "./curlRunner";
  * the same request batches SerpApi would use — and run one at a time in the
  * server's hidden browser, which opens the search on Google Flights and reads
  * its full "View more flights" list. No cURL is needed.
+ *
+ * With an `extension`, only the searches the saved search lacks are sent, and
+ * the new flights are merged into it (see `extend.ts`).
  */
-export function useSessionRun(query: SearchQuery, onFinished: (entry: StoredSearch) => void) {
+export function useSessionRun(
+  query: SearchQuery,
+  onFinished: (entry: StoredSearch) => void,
+  extension?: SearchExtension,
+) {
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [statuses, setStatuses] = useState<Map<number, RowStatus>>(new Map());
@@ -26,7 +34,10 @@ export function useSessionRun(query: SearchQuery, onFinished: (entry: StoredSear
   const [finishedAt, setFinishedAt] = useState<number | null>(null);
   const controller = useRef<AbortController | null>(null);
 
-  const jobs: GeneratedJob[] = useMemo(() => sessionRequestsFor(query), [query]);
+  const jobs: GeneratedJob[] = useMemo(
+    () => (extension ? missingJobs(query, searchedIds(extension.records)) : sessionRequestsFor(query)),
+    [query, extension],
+  );
   const tooMany = jobs.length > CURL_MAX_PER_RUN;
 
   // The run's waits are drawn ahead, so the total time can be shown before it
@@ -75,7 +86,11 @@ export function useSessionRun(query: SearchQuery, onFinished: (entry: StoredSear
       );
       if (abort.signal.aborted) return setMessage("Stopped. No results were saved.");
 
-      const result = finishRun(runQuery, outcome);
+      const result = finishRun(
+        runQuery,
+        outcome,
+        extension && { ...extension, sent: sentIds(runQuery, jobs) },
+      );
       setLastRecords(result.records);
       if ("entry" in result) onFinished(result.entry);
       else setMessage(result.message);

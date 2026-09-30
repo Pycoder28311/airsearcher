@@ -43,7 +43,9 @@ export function searchKeyOf(query: SearchQuery): string {
           query.dateRange?.end ?? "",
           query.tripLengthRange
             ? `${query.tripLengthRange.min}-${query.tripLengthRange.max}`
-            : (query.tripDurationDays ?? ""),
+            : query.tripLengths?.length
+              ? [...query.tripLengths].sort((a, b) => a - b).join("/")
+              : (query.tripDurationDays ?? ""),
           sorted(query.excludedDates).join("|"),
         ].join(":");
 

@@ -13,8 +13,10 @@
 
 import {
   MAX_SAVED_SEARCHES,
-  RESULT_FRESHNESS_MS,
+  RESULT_FRESHNESS_BY_DAYS_AHEAD,
 } from "@/lib/airsearcher/config/constants";
+import { candidateDates } from "@/lib/airsearcher/queryPlan";
+import { daysBetween, isoDate } from "@/lib/airsearcher/time";
 import {
   DEFAULT_DATE_PREFERENCES,
   DEFAULT_RANKING_CONFIG,
@@ -79,6 +81,12 @@ export interface StoredSearch {
    */
   records?: FlightRecord[];
   /**
+   * When dates or trip lengths were last added to this search (see
+   * `extend.ts`). `savedAt` stays the original run's, so the search's age is
+   * that of its oldest flights. Display only.
+   */
+  extendedAt?: string;
+  /**
    * How many flights the search's records hold — the number the history card
    * shows without loading them. Absent when none were kept.
    */
@@ -102,7 +110,7 @@ export interface StoredSearch {
   kind?: "google-curl";
   /**
    * Set once the results were removed because the search was outdated (older
-   * than RESULT_FRESHNESS_MS). The entry itself — query, dates, label — stays
+   * than its `freshnessLimitMs`). The entry itself — query, dates, label — stays
    * in the history; only arrangements, raw flights and price grids go.
    */
   resultsRemoved?: boolean;
@@ -379,14 +387,60 @@ export function findSearchById(id: string): StoredSearch | null {
   return loadSearches().find((entry) => entry.id === id) ?? null;
 }
 
+/** The search's earliest departure day that hasn't passed, or null when all have. */
+function earliestUpcomingDeparture(entry: StoredSearch, now: number): string | null {
+  const today = isoDate(new Date(now));
+  const days =
+    entry.query.dateMode === "exact"
+      ? entry.query.departureDate
+        ? [entry.query.departureDate]
+        : []
+      : candidateDates(entry.query);
+  return days.filter((day) => day >= today).sort()[0] ?? null;
+}
+
 /**
- * Whether an entry is old enough that its results should be recalculated.
- * This is the ONLY place the freshness threshold is applied.
+ * How old an entry may be before its prices count as outdated, by how soon its
+ * earliest flight leaves (RESULT_FRESHNESS_BY_DAYS_AHEAD); 0 when every flight
+ * has already left.
+ */
+export function freshnessLimitMs(entry: StoredSearch, now: number = Date.now()): number {
+  const departure = earliestUpcomingDeparture(entry, now);
+  if (!departure) return 0;
+  const daysAhead = daysBetween(isoDate(new Date(now)), departure);
+  const row = RESULT_FRESHNESS_BY_DAYS_AHEAD.find((r) => daysAhead >= r.daysAhead);
+  return row?.maxAgeMs ?? 0;
+}
+
+/**
+ * Whether an entry is old enough that its results should be recalculated: older
+ * than its `freshnessLimitMs`, which shrinks as its flights get closer.
+ * This is the ONLY place the freshness rule is applied.
  */
 export function isStale(entry: StoredSearch, now: number = Date.now()): boolean {
   const savedAt = new Date(entry.savedAt).getTime();
   if (Number.isNaN(savedAt)) return true;
-  return now - savedAt > RESULT_FRESHNESS_MS;
+  return now - savedAt > freshnessLimitMs(entry, now);
+}
+
+/**
+ * Why an entry counts as outdated, for messages: "more than 12 hours old, the
+ * limit for flights 10 days away", or "its flights have already left".
+ */
+export function staleReason(entry: StoredSearch, now: number = Date.now()): string {
+  const departure = earliestUpcomingDeparture(entry, now);
+  if (!departure) return "its flights have already left";
+  const days = daysBetween(isoDate(new Date(now)), departure);
+  return `more than ${describeFreshness(freshnessLimitMs(entry, now))} old, the limit for flights ${
+    days === 0 ? "leaving today" : `${days} day${days === 1 ? "" : "s"} away`
+  }`;
+}
+
+/** "1 day", "12 hours": a freshness limit for messages. */
+export function describeFreshness(ms: number): string {
+  const hours = Math.round(ms / (60 * 60 * 1000));
+  if (hours >= 24 && hours % 24 === 0) return `${hours / 24} day${hours === 24 ? "" : "s"}`;
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
 /**

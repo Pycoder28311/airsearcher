@@ -60,10 +60,23 @@ export function flexibleTripLength(query: SearchQuery): { min: number; max: numb
   return query.tripLengthRange ?? null;
 }
 
-/** "7 nights", "3–7 nights", or null when there is no length to show. */
+/**
+ * The several fixed lengths of an advanced round trip that was extended with
+ * more of them, shortest first; null when it has one length or an open one.
+ */
+export function tripLengthList(query: SearchQuery): number[] | null {
+  if (query.dateMode !== "advanced" || query.tripType !== "round-trip") return null;
+  if (flexibleTripLength(query)) return null;
+  const lengths = query.tripLengths?.filter((n) => Number.isInteger(n) && n > 0) ?? [];
+  return lengths.length > 0 ? [...new Set(lengths)].sort((a, b) => a - b) : null;
+}
+
+/** "7 nights", "3–7 nights", "5, 7, 10 nights", or null when there is no length to show. */
 export function describeTripLength(query: SearchQuery): string | null {
   const flexible = flexibleTripLength(query);
   if (flexible) return `${flexible.min}–${flexible.max} nights`;
+  const list = tripLengthList(query);
+  if (list) return `${list.join(", ")} night${list.length === 1 && list[0] === 1 ? "" : "s"}`;
   return query.tripDurationDays ? `${query.tripDurationDays} nights` : null;
 }
 
@@ -121,6 +134,8 @@ export function returnDateFor(query: SearchQuery, departureDate: string): string
  */
 export function returnDatesFor(query: SearchQuery, departureDate: string): (string | null)[] {
   if (flexibleTripLength(query)) return flexibleReturnDates(query, departureDate);
+  const list = tripLengthList(query);
+  if (list) return list.map((nights) => addDays(departureDate, nights));
   return [returnDateFor(query, departureDate)];
 }
 

@@ -125,6 +125,11 @@ export interface Itinerary {
   totalPrice: number;
 }
 
+/** Where a result's way back leaves from: its own destination unless it is an open jaw. */
+export function returnPlaceOf(arrangement: Arrangement): { cityId: string; airport: AirportCode } {
+  return arrangement.returnDestination ?? arrangement.destination;
+}
+
 /** Both flights of an itinerary, skipping the return when there is none. */
 export function legsOf(itinerary: Itinerary): NormalizedFlight[] {
   return itinerary.return
@@ -194,6 +199,12 @@ export function legFlights(leg: GroupLeg): NormalizedFlight[] {
 export interface Arrangement {
   id: string;
   destination: { cityId: string; airport: AirportCode };
+  /**
+   * Open jaw: where the way back leaves from, when it isn't `destination` —
+   * into Venice, home from Florence. Absent when the trip returns from where it
+   * arrived, and on one-way trips.
+   */
+  returnDestination?: { cityId: string; airport: AirportCode };
   gatheringAirport: AirportCode;
   /** The departure date this arrangement is built around. */
   departureDate: string;
@@ -279,6 +290,13 @@ export interface SearchQuery {
    * then fit inside `dateRange`. Absent or null means a fixed length.
    */
   tripLengthRange?: { min: number; max: number } | null;
+  /**
+   * Advanced mode, round trip: several fixed lengths at once, in nights, each
+   * coming back that many nights after its departure. Set when a finished
+   * search is extended with more trip lengths; it then replaces
+   * `tripDurationDays`. Ignored when `tripLengthRange` is set.
+   */
+  tripLengths?: number[] | null;
   /** ISO dates that must never be used. */
   excludedDates: string[];
   /** ISO date -> 1..3. Higher breaks ties in favour of that date. */

@@ -23,7 +23,10 @@ import {
   setValue,
 } from "@/lib/airsearcher/db/sqlite";
 import {
+  describeFreshness,
+  freshnessLimitMs,
   gatheredFlightsOf,
+  isStale,
   loadFilters,
   loadGatheredFlights,
   loadSearches,
@@ -33,6 +36,10 @@ import {
   type StoredSearch,
 } from "@/lib/airsearcher/storage";
 import { asCurlError, CurlError } from "@/lib/airsearcher/curl/errors";
+import { extendCurlSearch } from "@/lib/airsearcher/search";
+import { DEFAULT_FILTERS } from "@/lib/airsearcher/config/filters";
+import { DEFAULT_RANKING_CONFIG } from "@/lib/airsearcher/config/ranking";
+import type { FlightRecord } from "@/lib/airsearcher/types";
 import {
   flushStorage,
   getItem,
@@ -227,7 +234,13 @@ async function main() {
 
   await check("outdated searches keep their card; only their results are removed", async () => {
     const now = Date.parse("2026-09-29T12:00:00Z");
-    const query = { destinations: [{ cityId: "uk-london", airports: ["LHR"] }], origins: [] };
+    // Flights 30 days out: outdated after a day (RESULT_FRESHNESS_BY_DAYS_AHEAD).
+    const query = {
+      destinations: [{ cityId: "uk-london", airports: ["LHR"] }],
+      origins: [],
+      dateMode: "exact",
+      departureDate: "2026-10-29",
+    };
     const result = { arrangements: [{ id: "a", legs: [] }], records: [{ id: "r" }], priceGrid: { x: 1 } };
     const fresh = { id: "fresh", savedAt: "2026-09-29T09:00:00Z", label: "London · fresh", key: "k1", query, ...result };
     const old = {
@@ -250,6 +263,39 @@ async function main() {
     assert.equal(b.googleCurl?.requests?.length, 1);
     assert.equal(await flushStorage(), true);
     assert.ok(server.values[SEARCHES_KEY]!.includes('"resultsRemoved":true'));
+  });
+
+  await check("how long prices stay current depends on how soon the flights are", () => {
+    const now = Date.parse("2026-09-29T12:00:00Z");
+    const hoursAgo = (h: number) => new Date(now - h * 3_600_000).toISOString();
+    const leaving = (departureDate: string, savedAt: string) =>
+      ({ id: "f", key: "f", label: "f", savedAt, arrangements: [],
+         query: { dateMode: "exact", departureDate, destinations: [], origins: [] } }) as unknown as StoredSearch;
+
+    // About a month out: a day.
+    assert.equal(isStale(leaving("2026-10-29", hoursAgo(20)), now), false);
+    assert.equal(isStale(leaving("2026-10-29", hoursAgo(25)), now), true);
+    // 1–2 weeks out: 12 hours.
+    assert.equal(isStale(leaving("2026-10-09", hoursAgo(11)), now), false);
+    assert.equal(isStale(leaving("2026-10-09", hoursAgo(13)), now), true);
+    // Months out: several days.
+    assert.equal(isStale(leaving("2027-02-01", hoursAgo(72)), now), false);
+    assert.equal(freshnessLimitMs(leaving("2027-02-01", hoursAgo(0)), now), 5 * 24 * 3_600_000);
+    // Every flight gone: outdated.
+    assert.equal(isStale(leaving("2026-09-20", hoursAgo(1)), now), true);
+
+    // A range is judged by its first day still ahead, not one already passed.
+    const range = {
+      ...leaving("", hoursAgo(20)),
+      query: {
+        dateMode: "advanced", dateRange: { start: "2026-09-20", end: "2026-11-15" },
+        tripType: "round-trip", tripDurationDays: 7, excludedDates: [], destinations: [], origins: [],
+      },
+    } as unknown as StoredSearch;
+    assert.equal(freshnessLimitMs(range, now), 3_600_000, "today's flights (0 days ahead) set the limit");
+    assert.equal(isStale(range, now), true);
+    assert.equal(describeFreshness(12 * 3_600_000), "12 hours");
+    assert.equal(describeFreshness(24 * 3_600_000), "1 day");
   });
 
   /* ── Gathered flights, kept apart ───────────────────────────────────────── */
@@ -310,6 +356,44 @@ async function main() {
     removeSearch("s-new");
     assert.equal(await flushStorage(), true);
     assert.equal(server.values[recordsKeyOf("s-new")], null, "removing a search deletes its flights");
+  });
+
+  await check("an extended search keeps its id, card and age, with its flights merged in place", async () => {
+    resetStorageClientForChecks({});
+    fakeWindow();
+    const server = fakeServer();
+    const original = searchWith("s-ext", {
+      kind: "google-curl",
+      savedAt: "2026-09-30T08:00:00.000Z",
+      query: {
+        destinations: [], origins: [], gatheringAirport: "ATH", dateMode: "advanced", tripType: "round-trip",
+        dateRange: { start: "2026-11-11", end: "2026-11-28" }, tripDurationDays: 7, excludedDates: [],
+      },
+      // Empty flight lists: the rebuild reads real flights, and this checks bookkeeping only.
+      googleCurl: { arrangements: [], records: [{ id: "old", flights: [] }], requests: [{ label: "a", flights: 3 }] },
+    }) as unknown as StoredSearch;
+    saveSearch(original);
+    const saved = loadSearches()[0];
+    const extended = extendCurlSearch(
+      saved,
+      { ...saved.query, dateRange: { start: "2026-11-11", end: "2026-12-02" } },
+      DEFAULT_FILTERS,
+      DEFAULT_RANKING_CONFIG,
+      [{ id: "old", flights: [] }, { id: "new", flights: [] }] as unknown as FlightRecord[],
+      ["note"],
+      [{ label: "b", flights: 2 }],
+    );
+    const [entry, ...rest] = loadSearches();
+    assert.equal(rest.length, 0, "still one card");
+    assert.equal(entry.id, "s-ext");
+    assert.equal(entry.savedAt, "2026-09-30T08:00:00.000Z", "judged by its oldest flights");
+    assert.ok(entry.extendedAt);
+    assert.equal(entry.query.dateRange?.end, "2026-12-02");
+    assert.deepEqual(entry.googleCurl?.requests?.map((r) => r.label), ["a", "b"]);
+    assert.equal(extended.id, "s-ext");
+    assert.equal(await flushStorage(), true);
+    const stored = JSON.parse(server.values[recordsKeyOf("s-ext")]!);
+    assert.deepEqual(stored.googleCurl.map((r: { id: string }) => r.id), ["old", "new"]);
   });
 
   await check("a CurlError from before a hot reload is still recognised by its code", () => {

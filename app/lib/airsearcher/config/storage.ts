@@ -9,9 +9,9 @@
 /**
  * Largest value one key may hold, in UTF-16 code units. Not a real limit —
  * SQLite has no quota — only a guard against a broken write. It started as
- * localStorage's ~5 MB, which a few big searches outgrew; results of searches
- * older than a day are now dropped instead (see `storage.ts`), so the saved
- * history stays small without it.
+ * localStorage's ~5 MB, which a few big searches outgrew; results of outdated
+ * searches (see `isStale` in `storage.ts`) are now dropped instead, so the
+ * saved history stays small without it.
  */
 export const STORAGE_MAX_VALUE_CHARS = 100 * 1024 * 1024;
 

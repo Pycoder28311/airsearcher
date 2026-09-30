@@ -19,6 +19,7 @@ import {
   type NormalizedSegment,
 } from "@/lib/airsearcher/types";
 import PriceTag, { PRICE_TEXT } from "./PriceTag";
+import { cityName } from "@/data/places";
 
 /** "Tue 13 Oct 2026" — the flying day with its weekday. */
 export function withWeekday(iso: string | null): string {
@@ -191,6 +192,7 @@ function DirectionSummary({
   date,
   large,
   price,
+  place,
 }: {
   label: string;
   legs: GroupLeg[];
@@ -200,6 +202,8 @@ function DirectionSummary({
   large: boolean;
   /** The result's price range, at the end of the row; only the DEP row has it. */
   price?: string;
+  /** "to Venice" / "from Florence": named only on an open jaw, where the cities differ. */
+  place?: string;
 }) {
   const journeys = legs
     .map((leg) => (direction === "outbound" ? leg.outbound : leg.return))
@@ -242,6 +246,9 @@ function DirectionSummary({
           value={label}
           className={`font-semibold ${colorMain.text}`}
         />
+        {place && (
+          <Text size={large ? "small" : "very small"} value={place} className={`font-medium ${colorMain.text}`} />
+        )}
         <Text
           size={large ? "medium" : "very small"}
           value={withWeekday(date)}
@@ -294,6 +301,7 @@ export default function ResultCardClosed({
           large={largeHeaders}
           // Date-range searches show it in the date header above instead.
           price={largeHeaders ? priceRangeOf(arrangement) : undefined}
+          place={arrangement.returnDestination ? `to ${cityName(arrangement.destination.cityId)}` : undefined}
         />
         <DirectionSummary
           label="RET"
@@ -301,6 +309,9 @@ export default function ResultCardClosed({
           direction="return"
           date={arrangement.returnDate}
           large={largeHeaders}
+          place={
+            arrangement.returnDestination ? `from ${cityName(arrangement.returnDestination.cityId)}` : undefined
+          }
         />
       </div>
     </div>

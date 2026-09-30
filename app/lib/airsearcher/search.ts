@@ -111,26 +111,41 @@ function rankEveryArrangement(
   preferences: RankingPreferences,
   pool: FlightPool,
   allow: RoutingAllowance,
+  openJawOnly = false,
 ): Arrangement[] {
   const arrangements: Arrangement[] = [];
+  const places = mergedDestinations(query);
 
-  for (const place of mergedDestinations(query)) {
+  for (const place of places) {
     for (const airport of place.airports) {
-      for (const departureDate of candidateDates(query)) {
-        // An open trip length tries every return date; ranking picks the best.
-        for (const returnDate of returnDatesFor(query, departureDate)) {
-          arrangements.push(
-            ...buildArrangements({
-              origins: query.origins,
-              gatheringAirport: query.gatheringAirport,
-              destination: { cityId: place.cityId, airport },
-              pool,
-              departureDate,
-              returnDate,
-              allow,
-              sameAirline: query.sameAirline,
-            }),
-          );
+      // Home from the same airport, or — open jaw, on a round trip with several
+      // cities — from another city's airport: into Venice, home from Florence.
+      const homeFrom = [
+        ...(openJawOnly ? [] : [null]),
+        ...(query.tripType === "round-trip"
+          ? places
+              .filter((other) => other.cityId !== place.cityId)
+              .flatMap((other) => other.airports.map((code) => ({ cityId: other.cityId, airport: code })))
+          : []),
+      ];
+      for (const returnFrom of homeFrom) {
+        for (const departureDate of candidateDates(query)) {
+          // An open trip length tries every return date; ranking picks the best.
+          for (const returnDate of returnDatesFor(query, departureDate)) {
+            arrangements.push(
+              ...buildArrangements({
+                origins: query.origins,
+                gatheringAirport: query.gatheringAirport,
+                destination: { cityId: place.cityId, airport },
+                returnFrom: returnFrom ?? undefined,
+                pool,
+                departureDate,
+                returnDate,
+                allow,
+                sameAirline: query.sameAirline,
+              }),
+            );
+          }
         }
       }
     }
@@ -177,6 +192,32 @@ function keepWithinCap(ranked: Arrangement[]): Arrangement[] {
   return ranked.filter((arrangement) => kept.has(arrangement));
 }
 
+/**
+ * The cap applied apart to results that come home from where they arrived and
+ * to open-jaw ones, so the extra combinations never crowd the others out.
+ */
+function keepWithinCaps(ranked: Arrangement[]): Arrangement[] {
+  const kept = new Set([
+    ...keepWithinCap(ranked.filter((a) => !a.returnDestination)),
+    ...keepWithinCap(ranked.filter((a) => a.returnDestination)),
+  ]);
+  return ranked.filter((arrangement) => kept.has(arrangement));
+}
+
+/**
+ * Only the open-jaw results of a search (into one city, home from another),
+ * within their cap: for searches saved before open jaws were built, whose
+ * stored results come home from where they arrived.
+ */
+export function buildOpenJawArrangements(
+  query: SearchQuery,
+  preferences: RankingPreferences,
+  records: FlightRecord[],
+): Arrangement[] {
+  const allow = { direct: true, gather: true };
+  return keepWithinCap(rankEveryArrangement(query, preferences, poolFromRecords(records), allow, true));
+}
+
 /** The arrangements a search stores, within the cap. */
 export function buildAllArrangements(
   query: SearchQuery,
@@ -184,7 +225,7 @@ export function buildAllArrangements(
   pool: FlightPool,
   allow: RoutingAllowance = { direct: true, gather: true },
 ): Arrangement[] {
-  return keepWithinCap(rankEveryArrangement(query, preferences, pool, allow));
+  return keepWithinCaps(rankEveryArrangement(query, preferences, pool, allow));
 }
 
 /**
@@ -198,7 +239,7 @@ export function buildSearchResult(
   allow: RoutingAllowance = { direct: true, gather: true },
 ): { arrangements: Arrangement[]; priceGrid: StoredPriceGrid } {
   const ranked = rankEveryArrangement(query, preferences, pool, allow);
-  return { arrangements: keepWithinCap(ranked), priceGrid: cheapestPerPair(ranked) };
+  return { arrangements: keepWithinCaps(ranked), priceGrid: cheapestPerPair(ranked) };
 }
 
 /**
@@ -395,6 +436,50 @@ export async function runSearch(
     reused: false,
     requestCount: live.requestCount,
   };
+}
+
+/**
+ * Saves a Google Flights search again with more dates or trip lengths: every
+ * flight it now holds (the saved ones merged with the new, see `extend.ts`)
+ * is rebuilt through the same pipeline and stored under the same id, so its
+ * history card and results link stay. `savedAt` is kept, so the search is
+ * judged by its oldest flights; the new requests and notes follow the old.
+ */
+export function extendCurlSearch(
+  entry: StoredSearch,
+  query: SearchQuery,
+  filters: FilterState,
+  preferences: RankingPreferences,
+  records: FlightRecord[],
+  warnings: string[],
+  requests: CurlRequestCount[] = [],
+): StoredSearch {
+  const built = buildSearchResult(
+    query,
+    { ...preferences, weights: weightsOf(filters) },
+    poolFromRecords(records),
+  );
+
+  const extended: StoredSearch = {
+    ...entry,
+    label: labelFor(query),
+    key: `curl:${searchKeyOf(query)}`,
+    query,
+    extendedAt: new Date().toISOString(),
+    arrangements: [],
+    gatheredFlights: undefined,
+    googleCurl: {
+      arrangements: sortArrangements(built.arrangements, "score"),
+      priceGrid: built.priceGrid,
+      records,
+      warnings: [...(entry.googleCurl?.warnings ?? []), ...warnings],
+      requests: [...(entry.googleCurl?.requests ?? []), ...requests],
+      uniqueFlights: records.reduce((sum, record) => sum + record.flights.length, 0),
+    },
+  };
+
+  saveSearch(extended);
+  return extended;
 }
 
 /**

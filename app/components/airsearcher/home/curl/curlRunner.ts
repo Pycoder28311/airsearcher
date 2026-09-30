@@ -4,7 +4,8 @@ import { CURL_MIN_INTERVAL_MS } from "@/lib/airsearcher/config/curl";
 import type { CurlRunResponse } from "@/lib/airsearcher/curl/api";
 import type { CurlErrorInfo } from "@/lib/airsearcher/curl/errors";
 import { recordsFromCurlFlights } from "@/lib/airsearcher/curl/records";
-import { runCurlSearch } from "@/lib/airsearcher/search";
+import { extendCurlSearch, runCurlSearch } from "@/lib/airsearcher/search";
+import { mergeRecords, type SearchExtension } from "@/lib/airsearcher/extend";
 import {
   findSearchById,
   loadFilters,
@@ -177,10 +178,13 @@ export async function runSequence<Id>(
 /**
  * Turns a finished run into a saved result, or explains why there is none.
  * Flights are filed under the routes of `query`; the rest are reported.
+ * With an `extension`, the flights of the routes it sent (`sent`) are merged
+ * into the saved search, which is saved again under the same id.
  */
 export function finishRun(
   query: SearchQuery,
   outcome: SequenceOutcome,
+  extension?: SearchExtension & { sent: Set<string> },
 ):
   | { entry: StoredSearch; records: FlightRecord[] }
   | { message: string; records: FlightRecord[] | null } {
@@ -193,7 +197,12 @@ export function finishRun(
     };
   }
 
-  const { records, ignored } = recordsFromCurlFlights(query, outcome.flights);
+  const filed = recordsFromCurlFlights(query, outcome.flights);
+  const ignored = filed.ignored;
+  // Extending: only the routes this run searched count as new.
+  const records = extension
+    ? filed.records.filter((record) => extension.sent.has(record.id))
+    : filed.records;
   const warnings = [
     ...outcome.warnings,
     ...ignored.map((r) => `Ignored ${r.flights} flights on ${r.route}: not a route of this search.`),
@@ -208,14 +217,17 @@ export function finishRun(
     };
   }
 
-  const entry = runCurlSearch(
-    query,
-    loadFilters(),
-    loadPreferences().ranking,
-    records,
-    warnings,
-    outcome.requests,
-  );
+  const entry = extension
+    ? extendCurlSearch(
+        extension.entry,
+        query,
+        loadFilters(),
+        loadPreferences().ranking,
+        mergeRecords(extension.records, records, extension.sent),
+        warnings,
+        outcome.requests,
+      )
+    : runCurlSearch(query, loadFilters(), loadPreferences().ranking, records, warnings, outcome.requests);
   // Never open a results page for a search that isn't stored.
   if (!findSearchById(entry.id)) {
     return {

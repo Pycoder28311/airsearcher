@@ -9,13 +9,24 @@ import SearchHistoryList from "@/components/airsearcher/home/SearchHistoryList";
 import CurlRequestsPanel from "@/components/airsearcher/home/curl/CurlRequestsPanel";
 import AdvancedCalendarModal from "@/components/airsearcher/calendar/AdvancedCalendarModal";
 import MapModal from "@/components/airsearcher/map/MapModal";
+import ExtendBanner from "@/components/airsearcher/home/ExtendBanner";
+import {
+  canExtend,
+  extendedQuery,
+  routesChanged,
+  parseExtendParams,
+  type ExtendRequest,
+  type SearchExtension,
+} from "@/lib/airsearcher/extend";
 import {
   DEFAULT_GATHERING_AIRPORT,
   DEFAULT_PASSENGERS_PER_ORIGIN,
   GREEK_ORIGIN_DEFAULTS,
 } from "@/lib/airsearcher/config/constants";
 import {
+  findSearchById,
   loadFilters,
+  loadGatheredFlights,
   loadPreferences,
   loadSearches,
   pruneOutdatedResults,
@@ -24,7 +35,9 @@ import {
   type StoredSearch,
 } from "@/lib/airsearcher/storage";
 import { flushStorage, storageError, storageReady } from "@/lib/airsearcher/storageClient";
-import { runSearch, SearchRequestError, usesSerpApi } from "@/lib/airsearcher/search";
+import { extendCurlSearch, runSearch, SearchRequestError, usesSerpApi } from "@/lib/airsearcher/search";
+import { useApp } from "@/framework/ui/context/AppContext";
+import Button from "@/framework/ui/buttons/Button";
 import { addDays, isoDate } from "@/lib/airsearcher/time";
 import type { DestinationSelection, SearchQuery } from "@/lib/airsearcher/types";
 
@@ -53,6 +66,7 @@ function initialQuery(): SearchQuery {
 export default function HomePage() {
   const router = useRouter();
   const { showAlert } = useAlert();
+  const { openModal, closeModal } = useApp();
 
   const [query, setQuery] = useState<SearchQuery>(initialQuery);
   const [history, setHistory] = useState<StoredSearch[]>([]);
@@ -67,6 +81,33 @@ export default function HomePage() {
    * hydrate with a different value than it rendered with.
    */
   const [now, setNow] = useState<number | null>(null);
+  /** Set when the results page sent the user here to add dates to a saved search. */
+  const [extension, setExtension] = useState<SearchExtension | null>(null);
+
+  /** Loads the saved search and its flights, and sets the search to the extended one. */
+  const startExtension = async (request: ExtendRequest) => {
+    const entry = findSearchById(request.searchId);
+    const check = entry ? canExtend(entry) : { ok: false as const, reason: "unsupported" as const };
+    if (!entry || !check.ok) {
+      showAlert(
+        "Warning",
+        check.ok === false && check.reason === "stale"
+          ? "That search's prices are outdated, so dates can't be added to it. Run a new search instead."
+          : "That search can't have dates added to it.",
+        { durationMs: 7000 },
+      );
+      window.history.replaceState(null, "", "/");
+      return;
+    }
+    const records = await loadGatheredFlights(entry);
+    setQuery(extendedQuery(entry.query, request.range, request.nights));
+    setExtension({ entry, records });
+  };
+
+  const cancelExtension = () => {
+    setExtension(null);
+    window.history.replaceState(null, "", "/");
+  };
 
   /* Reading saved data is exactly the "subscribe to an external system" case
      effects exist for: it is loaded from the local database once the page is
@@ -99,6 +140,10 @@ export default function HomePage() {
         excludedDates: prefs.dates.excluded,
         priorityDates: prefs.dates.priority,
       }));
+
+      // Sent here to add dates or trip lengths to a saved search.
+      const request = parseExtendParams(window.location.search);
+      if (request) void startExtension(request);
     });
     return () => {
       cancelled = true;
@@ -106,25 +151,82 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const update = (next: Partial<SearchQuery>) =>
-    setQuery((current) => ({ ...current, ...next }));
+  /**
+   * Applies a change to the search. While adding to a saved search, new
+   * destinations or departure airports make a different search: that is
+   * confirmed first, and accepting leaves the adding mode.
+   */
+  const applyChange = (next: SearchQuery) => {
+    if (!extension || !routesChanged(extension.entry.query, next)) {
+      setQuery(next);
+      return;
+    }
+    openModal(
+      <div className="flex flex-col gap-4">
+        <Text
+          size="small"
+          value={`Changing the destinations or departure airports makes a new search instead of adding to “${extension.entry.label}”. That search stays as it is.`}
+          className="text-gray-700"
+        />
+        <div className="flex justify-end gap-2">
+          <Button styleType="tertiary" onClick={closeModal}>
+            Keep adding
+          </Button>
+          <Button
+            styleType="primary"
+            onClick={() => {
+              closeModal();
+              cancelExtension();
+              setQuery(next);
+            }}
+          >
+            Make a new search
+          </Button>
+        </div>
+      </div>,
+      "This will be a new search",
+    );
+  };
+
+  const update = (next: Partial<SearchQuery>) => applyChange({ ...query, ...next });
 
   /**
    * Adds the destination the map confirmed, or replaces the city it edited.
    * Airports added on their own are separate chips and stay as they are.
    */
-  const upsertDestination = (next: DestinationSelection) =>
-    setQuery((current) => {
-      const isCity = (place: DestinationSelection) =>
-        place.kind !== "airport" && place.cityId === next.cityId;
-      const known = current.destinations.some(isCity);
-      return {
-        ...current,
-        destinations: known
-          ? current.destinations.map((place) => (isCity(place) ? next : place))
-          : [...current.destinations, next],
-      };
+  const upsertDestination = (next: DestinationSelection) => {
+    const isCity = (place: DestinationSelection) =>
+      place.kind !== "airport" && place.cityId === next.cityId;
+    const known = query.destinations.some(isCity);
+    applyChange({
+      ...query,
+      destinations: known
+        ? query.destinations.map((place) => (isCity(place) ? next : place))
+        : [...query.destinations, next],
     });
+  };
+
+  /**
+   * Nothing new to search (a narrower range, one way, the same-airline rule…):
+   * the saved search is rebuilt from its own flights and opened.
+   */
+  const updateFromSaved = async () => {
+    if (!extension) return;
+    const entry = extendCurlSearch(
+      extension.entry,
+      query,
+      loadFilters(),
+      loadPreferences().ranking,
+      extension.records,
+      [],
+      [],
+    );
+    setExtension(null);
+    setHistory(loadSearches());
+    showAlert("Success", "Updated from the flights already found; nothing was searched.");
+    await flushStorage();
+    router.push(`/results?search=${entry.id}&source=google-curl`);
+  };
 
   const search = async () => {
     if (searching || curlRunning) return;
@@ -192,6 +294,15 @@ export default function HomePage() {
         <Text size="small" value="Loading…" className="text-gray-400" />
       ) : (
         <>
+          {extension && (
+            <ExtendBanner
+              extension={extension}
+              query={query}
+              onCancel={cancelExtension}
+              onUpdateFromSaved={() => void updateFromSaved()}
+            />
+          )}
+
           <SearchPanel
             query={query}
             onChange={update}
@@ -205,6 +316,7 @@ export default function HomePage() {
               disabled={searching}
               onRunningChange={setCurlRunning}
               onFinished={openCurlResult}
+              extension={extension ?? undefined}
             />
           </SearchPanel>
 

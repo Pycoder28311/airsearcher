@@ -11,6 +11,8 @@ export interface DayState {
   /** 0 = none, 1..3 = increasing preference. */
   priority: number;
   isToday: boolean;
+  /** A departure day a saved search already covers (the "change dates" calendar). */
+  searched?: boolean;
 }
 
 /**
@@ -62,7 +64,7 @@ export default function DayCell({
       onHover={() => onPointerEnter(iso)}
       className={`h-9 w-full p-0! text-sm tabular-nums ${stateClass} ${
         state.isToday ? "ring-1 ring-gray-400" : ""
-      }`}
+      } ${state.searched ? "font-semibold underline decoration-orange-500 decoration-2 underline-offset-4" : ""}`}
     >
       {day}
     </Button>
