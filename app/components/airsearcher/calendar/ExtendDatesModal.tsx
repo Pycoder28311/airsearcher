@@ -12,15 +12,13 @@ import { candidateDates } from "@/lib/airsearcher/queryPlan";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import {
   daysBetween,
-  extendRange,
-  formatDate,
   formatDuration,
   isoDate,
-  parseIsoDate,
+  type DraftRange,
+  type RangeField,
 } from "@/lib/airsearcher/time";
 import Dialog from "../common/Dialog";
-import type { DayState } from "./DayCell";
-import MonthGrid from "./MonthGrid";
+import RangePicker from "./RangePicker";
 
 /** No trip lengths added; one shared list, so the memos below stay put. */
 const NO_NIGHTS: number[] = [];
@@ -58,8 +56,17 @@ export default function ExtendDatesModal({
   onSearch: (range: { start: string; end: string }) => void;
 }) {
   const today = isoDate(new Date());
-  const [range, setRange] = useState(initialRange);
-  const [monthOffset, setMonthOffset] = useState(0);
+  const [draftRange, setDraftRange] = useState<DraftRange>(initialRange);
+  const [active, setActive] = useState<RangeField>("start");
+  /** The range being shown: while its end is still to be chosen, the start day alone. */
+  const range = useMemo(
+    () => ({
+      start: draftRange.start ?? initialRange.start,
+      end: draftRange.end ?? draftRange.start ?? initialRange.end,
+    }),
+    [draftRange, initialRange],
+  );
+  const complete = draftRange.start !== null && draftRange.end !== null;
 
   const searchedDays = useMemo(() => new Set(candidateDates(entry.query)), [entry.query]);
   const query = useMemo(() => extendedQuery(entry.query, range, extraNights), [entry.query, range, extraNights]);
@@ -74,22 +81,6 @@ export default function ExtendDatesModal({
   const span = daysBetween(range.start, range.end) + 1;
   const tooLong = span > MAX_ADVANCED_RANGE_DAYS;
   const needsSearch = jobs !== null && jobs.length > 0;
-
-  const stateOf = (iso: string): DayState => ({
-    disabled: iso < today,
-    inRange: iso >= range.start && iso <= range.end,
-    isEndpoint: iso === range.start || iso === range.end,
-    excluded: false,
-    priority: 0,
-    isToday: iso === today,
-    searched: searchedDays.has(iso),
-  });
-
-  const base = parseIsoDate(range.start) ?? new Date();
-  const monthOf = (offset: number) => {
-    const date = new Date(base.getFullYear(), base.getMonth() + monthOffset + offset, 1);
-    return { year: date.getFullYear(), month: date.getMonth() };
-  };
 
   const summary =
     jobs === null
@@ -121,7 +112,7 @@ export default function ExtendDatesModal({
           </div>
           <Button
             styleType="primary"
-            disabled={jobs === null || tooLong}
+            disabled={jobs === null || tooLong || !complete}
             onClick={() => {
               if (needsSearch) onSearch(range);
               else onNarrow(range);
@@ -134,40 +125,22 @@ export default function ExtendDatesModal({
       }
     >
       <div className="flex flex-col gap-5">
-        <div className="flex items-center justify-between gap-2">
-          <Button styleType="tertiary" onClick={() => setMonthOffset((m) => m - 1)}>
-            <Text icon="arrow-left" size="small" />
-            <span className="sr-only">Previous month</span>
-          </Button>
-          <Text
-            size="very small"
-            value={`${formatDate(range.start)} – ${formatDate(range.end)} · ${span} day${span === 1 ? "" : "s"}${
-              extraNights.length > 0 ? ` · adding ${extraNights.join(", ")} nights` : ""
-            }`}
-            className="text-gray-600"
-          />
-          <Button styleType="tertiary" onClick={() => setMonthOffset((m) => m + 1)}>
-            <Text icon="arrow-right" size="small" />
-            <span className="sr-only">Next month</span>
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          {[0, 1].map((offset) => {
-            const { year, month } = monthOf(offset);
-            return (
-              <div key={offset} className={offset === 1 ? "hidden sm:block" : ""}>
-                <MonthGrid
-                  year={year}
-                  month={month}
-                  stateOf={stateOf}
-                  onDayClick={(iso) => setRange((current) => extendRange(current, iso))}
-                  onDayEnter={() => {}}
-                />
-              </div>
-            );
-          })}
-        </div>
+        <RangePicker
+          range={draftRange}
+          onRangeChange={setDraftRange}
+          active={active}
+          onActiveChange={setActive}
+          labels={{ start: "First departure day", end: "Last departure day" }}
+          today={today}
+          extraState={(iso) => ({ searched: searchedDays.has(iso) })}
+          onReset={() => {
+            setDraftRange(initialRange);
+            setActive("start");
+          }}
+        />
+        {extraNights.length > 0 && (
+          <Text size="very small" value={`Adding ${extraNights.join(", ")} nights`} className="text-gray-600" />
+        )}
       </div>
     </Dialog>
   );

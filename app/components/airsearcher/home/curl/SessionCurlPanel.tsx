@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
 import { useApp } from "@/framework/ui/context/AppContext";
-import { colorRed, colorSecondary, grayLight, grayMid, radius } from "@/config/theme";
+import { colorSecondary, grayLight, grayMid, radius } from "@/config/theme";
 import { CURL_MAX_PER_RUN } from "@/lib/airsearcher/config/curl";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import { destinationsOf, type SearchQuery } from "@/lib/airsearcher/types";
@@ -181,22 +181,40 @@ export default function SessionCurlPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center gap-1">
-          <Text size="small" value="Google Flights" className="font-medium text-gray-800" />
-          <InfoHint text={BROWSER_HELP} label="How Google Flights is searched" />
+      {/* "Google Flights" and what the trip needs on the left; the page's main action on the right. */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1">
+            <Text size="small" value="Google Flights" className="font-medium text-gray-800" />
+            <InfoHint text={BROWSER_HELP} label="How Google Flights is searched" />
+          </div>
+          {blocked ? (
+            <Text size="very small" value={blocked} className="text-gray-500" />
+          ) : (
+            count > 0 && (
+              <Text
+                size="very small"
+                value={`This trip needs ${count} search${count === 1 ? "" : "es"} (${durationOf(session.totalMs)})`}
+                className="text-gray-500"
+              />
+            )
+          )}
         </div>
-        {blocked ? (
-          <Text size="very small" icon="alert" value={blocked} className={colorRed.text} />
-        ) : (
-          count > 0 && (
-            <Text
-              size="very small"
-              value={`This trip needs ${count} search${count === 1 ? "" : "es"} (${durationOf(session.totalMs)})`}
-              className="text-gray-500"
-            />
-          )
-        )}
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          <Button
+            styleType="primary"
+            disabled={session.running || disabled || count === 0 || blocked !== null}
+            onClick={start}
+            className="h-11 min-w-40 rounded-2xl! px-6!"
+          >
+            <Text size="medium" icon="search" value={session.running ? "Searching…" : "Search"} />
+          </Button>
+          {session.running && (
+            <Button styleType="secondary" onClick={session.stop} className="h-11 rounded-2xl! px-5!">
+              <Text size="small" icon="close" value="Stop" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {count > 0 && !session.tooMany && (
@@ -236,20 +254,6 @@ export default function SessionCurlPanel({
         <Text size="small" icon="info" value={session.message} className={colorSecondary.text} />
       )}
 
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {session.running && (
-          <Button styleType="secondary" onClick={session.stop}>
-            <Text size="small" icon="close" value="Stop" />
-          </Button>
-        )}
-        <Button
-          styleType="primary"
-          disabled={session.running || disabled || count === 0 || blocked !== null}
-          onClick={start}
-        >
-          <Text size="small" icon="search" value={session.running ? "Searching…" : "Search with Google"} />
-        </Button>
-      </div>
     </div>
   );
 }

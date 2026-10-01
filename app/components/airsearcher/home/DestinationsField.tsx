@@ -139,8 +139,8 @@ export default function DestinationsField({
         leftContent={chips.length > 0 ? chips : undefined}
         onRemoveLast={removeLast}
         onArmRemoveLast={setLastArmed}
-        // Chips wrap onto more rows; the text box keeps enough room to type.
-        className="h-auto! min-h-14 flex-wrap gap-1.5! py-2 [&>input]:min-w-28"
+        // Chips wrap onto more rows; the text box keeps enough room to type. A larger shadow, like the boxes beside it.
+        className="h-auto! min-h-14 flex-wrap gap-1.5! py-2 shadow-md! border-gray-300! [&>input]:min-w-28"
       />
 
       {airportCount > MAX_AIRPORTS_PER_REQUEST - 1 && (

@@ -3,7 +3,7 @@
 import Button from "@/framework/ui/buttons/Button";
 import Input from "@/framework/ui/input/Input";
 import Text from "@/framework/ui/iconText/Text";
-import { colorRed, grayMid, radius } from "@/config/theme";
+import { colorRed } from "@/config/theme";
 import { MAX_ADVANCED_RANGE_DAYS } from "@/lib/airsearcher/config/constants";
 import {
   candidateDates,
@@ -83,59 +83,71 @@ export default function DateField({
         .join(" · ")
     : "";
 
-  return (
-    <div className={`flex flex-col gap-2 ${radius} border ${error ? colorRed.border : grayMid.border} p-3`}>
-      <div className="flex items-center justify-between gap-2">
-        <Text size="very small" value="Dates" className="text-gray-500" />
-        <Button
-          styleType="underline"
-          onClick={() => {
-            onChange({ dateMode: advanced ? "exact" : "advanced" });
-            // Switching to a range opens its calendar straight away.
-            if (!advanced) onOpenCalendar();
-          }}
-        >
-          <Text size="very small" value={advanced ? "Select exact dates" : "Select date range"} />
-        </Button>
-      </div>
+  // Boxes dressed like the destination search box: its border, shadow, height
+  // and corners, written out with `!` (Tailwind can't see one appended to a
+  // token). Side by side they share one border, with no gap between them.
+  const box = `relative flex h-14 min-w-0 flex-1 flex-col justify-center bg-white px-4 shadow-md border ${
+    error ? colorRed.border : "border-gray-300"
+  } focus-within:z-10 focus-within:border-blue-500`;
 
+  return (
+    <div className="flex flex-col">
       {advanced ? (
-        <Button styleType="tertiary" onClick={onOpenCalendar} className="w-full justify-start!">
+        <Button
+          styleType="tertiary"
+          onClick={onOpenCalendar}
+          className={`${box} items-start! rounded-2xl! bg-white! hover:border-gray-400`}
+        >
+          <Text size="very small" value="Date range" className="text-gray-500" />
           <Text
-            icon="calendar"
             size="small"
             value={summary || "Configure the date search"}
-            className="text-gray-900"
+            className="w-full truncate font-medium text-gray-900"
           />
         </Button>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="flex flex-col gap-0.5">
+        <div className="flex">
+          <label className={`${box} ${query.tripType === "round-trip" ? "rounded-l-2xl" : "rounded-2xl"}`}>
             <Text size="very small" value="Departure" className="text-gray-500" />
             <Input
               type="date"
-              styleType={error ? "error" : "outlined"}
+              styleType="ghost"
               value={query.departureDate ?? ""}
               onChange={(event) => onChange({ departureDate: event.target.value || null })}
+              className="h-6 border-0! bg-transparent! p-0! font-medium hover:bg-transparent!"
             />
           </label>
 
           {query.tripType === "round-trip" && (
-            <label className="flex flex-col gap-0.5">
+            <label className={`${box} -ml-px rounded-r-2xl`}>
               <Text size="very small" value="Return" className="text-gray-500" />
               <Input
                 type="date"
-                styleType={error ? "error" : "outlined"}
+                styleType="ghost"
                 value={query.returnDate ?? ""}
                 min={query.departureDate ?? undefined}
                 onChange={(event) => onChange({ returnDate: event.target.value || null })}
+                className="h-6 border-0! bg-transparent! p-0! font-medium hover:bg-transparent!"
               />
             </label>
           )}
         </div>
       )}
 
-      {error && <Text size="very small" value={error} className={colorRed.text} />}
+      {/* A tab hanging from the boxes' bottom edge, as wide as their straight part (inset by their 16px corners): gray, rounded below, no gap above. */}
+      <Button
+        styleType="tertiary"
+        onClick={() => {
+          onChange({ dateMode: advanced ? "exact" : "advanced" });
+          // Switching to a range opens its calendar straight away.
+          if (!advanced) onOpenCalendar();
+        }}
+        className="-mt-px mx-4 rounded-t-none! rounded-b-xl! border border-t-0 border-gray-300 bg-gray-200! px-6! py-1! hover:bg-gray-300!"
+      >
+        <Text size="very small" value={advanced ? "Select exact dates" : "Select date range"} className="text-gray-700" />
+      </Button>
+
+      {error && <Text size="very small" value={error} className={`px-1 ${colorRed.text}`} />}
     </div>
   );
 }

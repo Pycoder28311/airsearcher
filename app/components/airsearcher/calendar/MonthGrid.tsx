@@ -19,6 +19,7 @@ export default function MonthGrid({
   stateOf,
   onDayClick,
   onDayEnter,
+  onLeave,
 }: {
   year: number;
   /** 0-based, as JavaScript months are. */
@@ -26,6 +27,8 @@ export default function MonthGrid({
   stateOf: (iso: string) => DayState;
   onDayClick: (iso: string) => void;
   onDayEnter: (iso: string) => void;
+  /** The pointer left the month, so a hover preview can end. */
+  onLeave?: () => void;
 }) {
   const first = new Date(year, month, 1);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -37,10 +40,11 @@ export default function MonthGrid({
       <Text
         size="small"
         value={first.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
-        className="font-semibold text-gray-900"
+        className="justify-center font-semibold text-gray-900"
       />
 
-      <div className="grid grid-cols-7 gap-1">
+      {/* No gap between columns, so a range's band runs unbroken along a week. */}
+      <div className="grid grid-cols-7 gap-y-1" onPointerLeave={onLeave}>
         {WEEKDAYS.map((label) => (
           <Text
             key={label}

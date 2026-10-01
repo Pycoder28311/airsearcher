@@ -12,7 +12,17 @@ import os from "node:os";
 import path from "node:path";
 
 import { STORAGE_MAX_VALUE_CHARS } from "@/lib/airsearcher/config/storage";
-import { FILTERS_KEY, PREFS_KEY, recordsKeyOf, SEARCHES_KEY } from "@/lib/airsearcher/db/keys";
+import {
+  addSavedResult,
+  isSavedResultOutdated,
+  loadSavedResults,
+  removeSavedResult,
+  savedResultId,
+  savedResultOutdatedReason,
+  type SavedResult,
+} from "@/lib/airsearcher/savedResults";
+import type { Arrangement } from "@/lib/airsearcher/types";
+import { FILTERS_KEY, PREFS_KEY, recordsKeyOf, SAVED_RESULTS_KEY, SEARCHES_KEY } from "@/lib/airsearcher/db/keys";
 import {
   getValue,
   getValues,
@@ -77,7 +87,7 @@ interface FakeServer {
 
 function fakeServer(initial: Partial<FakeServer> = {}): FakeServer {
   const server: FakeServer = {
-    values: { [SEARCHES_KEY]: null, [FILTERS_KEY]: null, [PREFS_KEY]: null },
+    values: { [SEARCHES_KEY]: null, [FILTERS_KEY]: null, [PREFS_KEY]: null, [SAVED_RESULTS_KEY]: null },
     imported: true,
     puts: [],
     failPuts: 0,
@@ -401,6 +411,34 @@ async function main() {
     assert.equal(asCurlError(stale)?.code, "cooling_down");
     assert.equal(asCurlError(new CurlError("timeout", "t"))?.code, "timeout");
     assert.equal(asCurlError(new Error("other")), null);
+  });
+
+  await check("saved results round-trip, and go outdated by their own departure day", () => {
+    resetStorageClientForChecks({});
+    fakeServer();
+    const now = Date.parse("2026-09-30T12:00:00Z");
+    const result = (departureDate: string, foundAt: string): SavedResult => ({
+      id: savedResultId("s", "google-curl", { id: departureDate } as Arrangement),
+      savedAt: foundAt,
+      foundAt,
+      searchId: "s",
+      searchLabel: "Venice",
+      source: "google-curl",
+      arrangement: { id: departureDate, departureDate } as Arrangement,
+    });
+    const far = result("2026-12-20", "2026-09-27T12:00:00Z"); // 81 days ahead, 3 days old: limit 2 days
+    const soon = result("2026-10-02", "2026-09-30T08:00:00Z"); // 2 days ahead, 4 hours old: limit 4 hours
+    const left = result("2026-09-29", "2026-09-29T08:00:00Z");
+    assert.equal(addSavedResult(far), true);
+    assert.equal(addSavedResult(soon), true);
+    assert.equal(addSavedResult(soon), true, "saving again replaces it");
+    assert.deepEqual(loadSavedResults().map((r) => r.id), [soon.id, far.id]);
+    assert.equal(isSavedResultOutdated(far, now), true);
+    assert.equal(isSavedResultOutdated(soon, now), false);
+    assert.equal(isSavedResultOutdated(left, now), true);
+    assert.match(savedResultOutdatedReason(left, now), /left 1 day ago/);
+    assert.equal(removeSavedResult(far.id), true);
+    assert.deepEqual(loadSavedResults().map((r) => r.id), [soon.id]);
   });
 
   resetStorageClientForChecks(null);

@@ -59,10 +59,22 @@ export interface PriceGrid {
   thresholds: { low: number; high: number } | null;
 }
 
-/** One departure/return combination, as the grid and the results page select it. */
+/**
+ * One departure/return combination, as the grid and the results page select
+ * it. A null return is a whole departure day, any return: what the price line
+ * of a fixed-length search selects.
+ */
 export interface DatePair {
   departureDate: string;
-  returnDate: string;
+  returnDate: string | null;
+}
+
+/** Whether a result belongs to a selected pair or day. */
+export function inPair(arrangement: Arrangement, pair: DatePair): boolean {
+  return (
+    arrangement.departureDate === pair.departureDate &&
+    (pair.returnDate === null || arrangement.returnDate === pair.returnDate)
+  );
 }
 
 /** The key a pair is stored under in `PriceGrid.cells`. */
@@ -194,4 +206,84 @@ export function priceBand(
   if (cheapest < thresholds.low) return "low";
   if (cheapest < thresholds.high) return "mid";
   return "high";
+}
+
+/** One departure day of the price line: its cheapest result, whatever its return. */
+export interface PriceLineCell {
+  departureDate: string;
+  /** The cheapest result's return day; null one way, or with no result. */
+  returnDate: string | null;
+  cheapest: number | null;
+  range: PriceRange | null;
+  /** How many results leave this day. */
+  count: number;
+  /** From the stored floor: filters not applied, no flights kept for the day. */
+  unfiltered: boolean;
+}
+
+export interface PriceLine {
+  cells: PriceLineCell[];
+  best: PriceLineCell | null;
+  thresholds: PriceGrid["thresholds"];
+}
+
+/**
+ * The grid of a fixed-length search, where each departure day has its one
+ * return day (or a few, with several trip lengths): a single row, the
+ * cheapest result for each candidate departure day. Like the grid, a day the
+ * cap left with nothing stored takes its price from the floor, unfiltered.
+ */
+export function buildPriceLine(
+  query: SearchQuery,
+  arrangements: Arrangement[],
+  fallback?: { floor: StoredPriceGrid; stored: Arrangement[] },
+): PriceLine {
+  const byDay = new Map<string, PriceLineCell>(
+    candidateDates(query).map((departureDate) => [
+      departureDate,
+      { departureDate, returnDate: null, cheapest: null, range: null, count: 0, unfiltered: false },
+    ]),
+  );
+
+  for (const arrangement of arrangements) {
+    const cell = byDay.get(arrangement.departureDate);
+    if (!cell) continue;
+    cell.count++;
+    const price = arrangement.totals.totalPrice;
+    if (cell.cheapest === null || price < cell.cheapest) {
+      cell.cheapest = price;
+      cell.range = groupPriceRange(arrangement);
+      cell.returnDate = arrangement.returnDate;
+    }
+  }
+
+  if (fallback) {
+    const storedDays = new Set(fallback.stored.map((a) => a.departureDate));
+    for (const [key, price] of Object.entries(fallback.floor.cells)) {
+      const [departureDate, returnDate] = key.split("|");
+      const cell = byDay.get(departureDate);
+      if (!cell || cell.count > 0 || storedDays.has(departureDate)) continue;
+      if (cell.cheapest === null || price < cell.cheapest) {
+        cell.cheapest = price;
+        cell.range = fallback.floor.ranges?.[key] ?? null;
+        cell.returnDate = returnDate || null;
+        cell.unfiltered = true;
+      }
+    }
+  }
+
+  const cells = [...byDay.values()];
+  let best: PriceLineCell | null = null;
+  const prices: number[] = [];
+  for (const cell of cells) {
+    if (cell.cheapest === null || cell.unfiltered) continue;
+    prices.push(cell.cheapest);
+    if (!best || cell.cheapest < best.cheapest!) best = cell;
+  }
+  prices.sort((a, b) => a - b);
+  const thresholds =
+    prices.length > 0
+      ? { low: prices[Math.floor(prices.length / 3)], high: prices[Math.floor((2 * prices.length) / 3)] }
+      : null;
+  return { cells, best, thresholds };
 }

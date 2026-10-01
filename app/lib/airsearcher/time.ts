@@ -122,20 +122,55 @@ export function formatDate(iso: string | null): string {
   });
 }
 
+/** Which end of a date range the next click on a day sets. */
+export type RangeField = "start" | "end";
+
+/** A range being picked: the end is null until it is chosen. */
+export interface DraftRange {
+  start: string | null;
+  end: string | null;
+}
+
 /**
- * The range after a click on `iso`: a day before it moves the start there, a
- * day after it moves the end there, and a day inside moves whichever end is
- * nearer (the end on a tie), so the range can also be shortened. With no range
- * yet, the day becomes a one-day range.
+ * A click on `iso` in the range picker, as Google Flights' date picker does it.
+ *
+ *   - Setting the start moves the whole range there, keeping its length (no
+ *     end yet: just the start), then the end is next.
+ *   - Setting the end: a day on or after the start ends the range there; a day
+ *     before it starts the range there instead. The end stays next, so more
+ *     clicks keep adjusting the end.
  */
-export function extendRange(
-  range: { start: string; end: string } | null,
+export function pickRangeDay(
+  range: DraftRange,
+  active: RangeField,
   iso: string,
-): { start: string; end: string } {
-  if (!range) return { start: iso, end: iso };
-  if (iso < range.start) return { start: iso, end: range.end };
-  if (iso > range.end) return { start: range.start, end: iso };
-  return daysBetween(range.start, iso) < daysBetween(iso, range.end)
-    ? { start: iso, end: range.end }
-    : { start: range.start, end: iso };
+): { range: DraftRange; active: RangeField } {
+  if (active === "start" || range.start === null) {
+    const span = range.start && range.end ? daysBetween(range.start, range.end) : null;
+    return { range: { start: iso, end: span === null ? null : addDays(iso, span) }, active: "end" };
+  }
+  if (iso < range.start) return { range: { start: iso, end: range.end }, active: "end" };
+  return { range: { start: range.start, end: iso }, active: "end" };
+}
+
+/**
+ * The < > arrows beside a date: the start moves the whole range a day,
+ * keeping its length; the end moves only itself, never before the start.
+ * Neither goes before `earliest`. Unchanged when the move isn't possible.
+ */
+export function shiftRangeField(
+  range: DraftRange,
+  field: RangeField,
+  days: number,
+  earliest: string,
+): DraftRange {
+  if (field === "start") {
+    if (!range.start) return range;
+    const start = addDays(range.start, days);
+    if (start < earliest) return range;
+    return { start, end: range.end && addDays(range.end, days) };
+  }
+  if (!range.end || !range.start) return range;
+  const end = addDays(range.end, days);
+  return end < range.start ? range : { start: range.start, end };
 }

@@ -13,13 +13,19 @@ export interface DayState {
   isToday: boolean;
   /** A departure day a saved search already covers (the "change dates" calendar). */
   searched?: boolean;
+  /** The range's band reaches the left or right edge of this day, joining it to its neighbours. */
+  bandLeft?: boolean;
+  bandRight?: boolean;
+  /** The day under the pointer that would end the range: an outlined circle. */
+  previewEnd?: boolean;
 }
 
 /**
  * One day in the calendar grid.
  *
- * Every state is expressed with theme tokens, so exclusions read red, priority
- * reads orange with increasing strength, and the chosen range reads blue.
+ * Range ends are filled circles joined by a light band through the days
+ * between, drawn edge to edge so the range reads as one shape, as in Google
+ * Flights. Exclusions read red and priority orange with increasing strength.
  */
 export default function DayCell({
   iso,
@@ -46,27 +52,33 @@ export default function DayCell({
           : "";
 
   const rangeClass = state.isEndpoint
-    ? "bg-blue-600! text-white!"
-    : state.inRange
-      ? "bg-blue-50! text-blue-900!"
-      : "";
+    ? "bg-blue-600! text-white! font-semibold"
+    : state.previewEnd
+      ? "bg-white! text-blue-900! ring-2! ring-blue-600!"
+      : state.inRange
+        ? "bg-transparent! text-blue-900!"
+        : "";
 
   // Exclusion wins over everything: it is the only state that removes a date.
   const stateClass = state.excluded
     ? "bg-transparent! text-red-600! line-through ring-1 ring-red-300"
-    : priorityClass || rangeClass || "bg-transparent!";
+    : priorityClass || rangeClass || "bg-transparent! hover:bg-gray-100!";
 
   return (
-    <Button
-      styleType="tertiary"
-      disabled={state.disabled}
-      onClick={() => onClick(iso)}
-      onHover={() => onPointerEnter(iso)}
-      className={`h-9 w-full p-0! text-sm tabular-nums ${stateClass} ${
-        state.isToday ? "ring-1 ring-gray-400" : ""
-      } ${state.searched ? "font-semibold underline decoration-orange-500 decoration-2 underline-offset-4" : ""}`}
-    >
-      {day}
-    </Button>
+    <div className="relative flex h-10 items-center justify-center">
+      {state.bandLeft && <span aria-hidden className="absolute inset-y-0.5 left-0 w-1/2 bg-blue-50" />}
+      {state.bandRight && <span aria-hidden className="absolute inset-y-0.5 right-0 w-1/2 bg-blue-50" />}
+      <Button
+        styleType="tertiary"
+        disabled={state.disabled}
+        onClick={() => onClick(iso)}
+        onHover={() => onPointerEnter(iso)}
+        className={`relative h-9 w-9 rounded-full! p-0! text-sm tabular-nums transition-none! ${stateClass} ${
+          state.isToday && !state.isEndpoint ? "ring-1 ring-gray-400" : ""
+        } ${state.searched ? "underline decoration-orange-500 decoration-2 underline-offset-4" : ""}`}
+      >
+        {day}
+      </Button>
+    </div>
   );
 }

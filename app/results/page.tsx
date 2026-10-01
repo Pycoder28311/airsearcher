@@ -29,7 +29,8 @@ import {
   uniqueArrangements,
 } from "@/lib/airsearcher/grouping";
 import { applyScopedFilters, explainEmpty } from "@/lib/airsearcher/filtering";
-import type { DatePair } from "@/lib/airsearcher/priceGrid";
+import { inPair, type DatePair } from "@/lib/airsearcher/priceGrid";
+import { withWeekday } from "@/components/airsearcher/results/ResultCardClosed";
 import { buildOpenJawArrangements, usesSerpApi, weightsOf } from "@/lib/airsearcher/search";
 import {
   findSearchById,
@@ -61,6 +62,13 @@ import {
   withLength,
 } from "@/lib/airsearcher/tripLength";
 import { canExtend, extendUrl, searchedIds } from "@/lib/airsearcher/extend";
+import {
+  addSavedResult,
+  loadSavedResults,
+  removeSavedResult,
+  savedResultId,
+  type SavedResult,
+} from "@/lib/airsearcher/savedResults";
 import ExtendDatesModal from "@/components/airsearcher/calendar/ExtendDatesModal";
 import { useApp } from "@/framework/ui/context/AppContext";
 import { useRouter } from "next/navigation";
@@ -165,6 +173,8 @@ function ResultsView() {
   const [viewRange, setViewRange] = useState<{ start: string; end: string } | null>(null);
   /** The "change dates" calendar while open, with the trip lengths it adds. */
   const [datesModal, setDatesModal] = useState<{ extraNights: number[] } | null>(null);
+  /** The results saved for the Saved page, from every search. */
+  const [savedResults, setSavedResults] = useState<SavedResult[]>([]);
 
   /* Reading saved data is exactly the "subscribe to an external system" case
      effects exist for: it is loaded from the local database once the page is
@@ -184,6 +194,7 @@ function ResultsView() {
       const prefs = loadPreferences();
 
       setEntry(found);
+      setSavedResults(loadSavedResults());
       setFilters(loadFilters());
       setPreferences(prefs);
       setSidebarOpen(!prefs.sidebarCollapsed);
@@ -207,6 +218,40 @@ function ResultsView() {
   const rangeSearch = entry?.query.dateMode === "advanced";
   const sources = entry ? sourcesOf(entry) : [];
   const activeSource = entry ? activeSourceOf(entry, source) : source;
+
+  /** This search and tab's saved results, by result id. */
+  const savedIds = useMemo(
+    () =>
+      new Set(
+        savedResults
+          .filter((item) => item.searchId === entry?.id && item.source === activeSource)
+          .map((item) => item.arrangement.id),
+      ),
+    [savedResults, entry?.id, activeSource],
+  );
+  const toggleSaved = useCallback(
+    (arrangement: Arrangement) => {
+      if (!entry) return;
+      const id = savedResultId(entry.id, activeSource, arrangement);
+      const written = savedIds.has(arrangement.id)
+        ? removeSavedResult(id)
+        : addSavedResult({
+            id,
+            savedAt: new Date().toISOString(),
+            foundAt: entry.savedAt,
+            searchId: entry.id,
+            searchLabel: entry.label,
+            source: activeSource,
+            arrangement,
+          });
+      if (!written) {
+        showAlert("Warning", "The result couldn't be saved to the local database.", { durationMs: 6000 });
+        return;
+      }
+      setSavedResults(loadSavedResults());
+    },
+    [entry, activeSource, savedIds, showAlert],
+  );
 
   // "One way" in the sidebar shows a round-trip search's results without the way back.
   const oneWay = entry?.query.tripType === "round-trip" && filters?.type === "one-way";
@@ -295,11 +340,7 @@ function ResultsView() {
   const selectedOnly = useMemo(
     () =>
       selectedPair
-        ? visible.filter(
-            (a) =>
-              a.departureDate === selectedPair.departureDate &&
-              a.returnDate === selectedPair.returnDate,
-          )
+        ? visible.filter((a) => inPair(a, selectedPair))
         : visible,
     [visible, selectedPair],
   );
@@ -517,9 +558,24 @@ function ResultsView() {
   }
 
   const reasons = visible.length === 0 ? explainEmpty(arrangements, filters) : [];
-  const pairLabel = selectedPair
-    ? describePair(selectedPair, daysBetween(selectedPair.departureDate, selectedPair.returnDate))
-    : "";
+  /** The Google requests' flight counts and notes, for "Show info". */
+  const curlInfo =
+    activeSource === "google-curl" ? (
+      <CurlRequestSummary
+        requests={entry.googleCurl?.requests}
+        uniqueFlights={entry.googleCurl?.uniqueFlights}
+        warnings={entry.googleCurl?.warnings}
+      />
+    ) : undefined;
+
+  const pairLabel = !selectedPair
+    ? ""
+    : selectedPair.returnDate === null
+      ? `Leaving ${withWeekday(selectedPair.departureDate)}`
+      : describePair(
+          { ...selectedPair, returnDate: selectedPair.returnDate },
+          daysBetween(selectedPair.departureDate, selectedPair.returnDate),
+        );
 
   return (
     <div className="flex w-full gap-6">
@@ -585,25 +641,15 @@ function ResultsView() {
           </div>
         )}
 
-        {activeSource === "google-curl" && (
+        {/* A date range shows the info beside its grid and chart, in their place; exact dates here. */}
+        {curlInfo && !rangeSearch && (
           <div className="flex flex-col gap-2">
             <div>
-              <Button styleType="tertiary" onClick={() => setShowInfo((v) => !v)}>
-                <Text
-                  icon={showInfo ? "chevron-up" : "info"}
-                  size="small"
-                  value={showInfo ? "Hide info" : "Show info"}
-                />
+              <Button styleType={showInfo ? "primary" : "tertiary"} onClick={() => setShowInfo((v) => !v)}>
+                <Text size="small" value={showInfo ? "Hide info" : "Show info"} />
               </Button>
             </div>
-
-            {showInfo && (
-              <CurlRequestSummary
-                requests={entry.googleCurl?.requests}
-                uniqueFlights={entry.googleCurl?.uniqueFlights}
-                warnings={entry.googleCurl?.warnings}
-              />
-            )}
+            {showInfo && curlInfo}
           </div>
         )}
 
@@ -635,6 +681,7 @@ function ResultsView() {
             }
             selectedPair={selectedPair}
             onSelectPair={setSelectedPair}
+            info={curlInfo}
           />
         )}
 
@@ -738,6 +785,8 @@ function ResultsView() {
             onToggle={toggleOpen}
             onFloat={floating.open}
             onUnfloat={floating.close}
+            savedIds={savedIds}
+            onSave={toggleSaved}
           />
         )}
       </section>

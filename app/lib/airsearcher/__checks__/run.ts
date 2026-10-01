@@ -30,7 +30,7 @@ import {
   returnDatesFor,
   searchId,
 } from "@/lib/airsearcher/queryPlan";
-import { eachDayInRange, extendRange } from "@/lib/airsearcher/time";
+import { eachDayInRange, pickRangeDay, shiftRangeField, type DraftRange } from "@/lib/airsearcher/time";
 import { costOf, explainCost } from "@/lib/airsearcher/quota";
 import {
   flightRecordsFromResponses,
@@ -67,7 +67,7 @@ import {
 import { searchKeyOf } from "@/lib/airsearcher/searchKey";
 import { buildSearchResult, usesSerpApi } from "@/lib/airsearcher/search";
 import { MAX_AIRPORTS_PER_REQUEST } from "@/lib/airsearcher/config/constants";
-import { buildPriceGrid, pairKey } from "@/lib/airsearcher/priceGrid";
+import { buildPriceGrid, pairKey, buildPriceLine, inPair } from "@/lib/airsearcher/priceGrid";
 import { normalizeTravelpayoutsResponse } from "@/lib/airsearcher/travelpayouts";
 import { loadSearches, loadFilters, loadPreferences } from "@/lib/airsearcher/storage";
 import { resetStorageClientForChecks } from "@/lib/airsearcher/storageClient";
@@ -454,6 +454,31 @@ check("a grid cell holds the cheapest price, and an empty pair stays a cell", ()
 check("a fixed-length or exact search has no price grid", () => {
   assert.equal(buildPriceGrid({ ...GRID_QUERY, tripLengthRange: null }, []).departureDates.length, 0);
   assert.equal(buildPriceGrid(QUERY, []).departureDates.length, 0);
+});
+
+check("a fixed-length search gets a price line: the cheapest per departure day", () => {
+  const fixed: SearchQuery = { ...GRID_QUERY, tripLengthRange: null, tripDurationDays: 7 };
+  const line = buildPriceLine(fixed, [
+    priced("2026-09-01", "2026-09-08", 900),
+    priced("2026-09-01", "2026-09-08", 700),
+    priced("2026-09-03", "2026-09-10", 500),
+  ]);
+  assert.deepEqual(line.cells.map((c) => c.departureDate), candidateDates(fixed));
+  const first = line.cells.find((c) => c.departureDate === "2026-09-01");
+  assert.equal(first?.cheapest, 700);
+  assert.equal(first?.count, 2);
+  assert.equal(first?.returnDate, "2026-09-08");
+  assert.equal(line.cells.find((c) => c.departureDate === "2026-09-02")?.cheapest, null);
+  assert.equal(line.best?.departureDate, "2026-09-03");
+  // A whole departure day selects every result leaving it, whatever the return.
+  assert.equal(inPair(priced("2026-09-01", "2026-09-06", 1), { departureDate: "2026-09-01", returnDate: null }), true);
+  assert.equal(inPair(priced("2026-09-01", "2026-09-06", 1), { departureDate: "2026-09-01", returnDate: "2026-09-08" }), false);
+  // A day the cap left with nothing stored takes the floor, marked unfiltered.
+  const floored = buildPriceLine(fixed, [], { floor: { cells: { [pairKey("2026-09-02", "2026-09-09")]: 400 } }, stored: [] });
+  const second = floored.cells.find((c) => c.departureDate === "2026-09-02");
+  assert.equal(second?.cheapest, 400);
+  assert.equal(second?.unfiltered, true);
+  assert.equal(floored.best, null, "floor days never count as the best");
 });
 
 check("every date pair keeps a price, within the arrangement cap", () => {
@@ -866,6 +891,36 @@ const PAIR = [
   { airport: "ATH", passengers: 2 },
   { airport: "SKG", passengers: 2 },
 ];
+
+check("a flight without a price never makes a result, so nothing shows as 0 €", () => {
+  const unpriced = (f: NormalizedFlight): NormalizedFlight => ({ ...f, price: null });
+  const args = {
+    origins: [{ airport: "ATH", passengers: 1 }],
+    gatheringAirport: "ATH",
+    destination: { cityId: "lv-riga", airport: "RIX" },
+    departureDate: OUT,
+    returnDate: BACK,
+    allow: { direct: true, gather: true },
+  };
+  const out = flight("ATH", "RIX", `${OUT} 15:15`, `${OUT} 18:30`, 342, "Air Baltic");
+  const back = flight("RIX", "ATH", `${BACK} 10:00`, `${BACK} 13:15`, 99, "Air Baltic");
+  const sasOut = unpriced(flight("ATH", "RIX", `${OUT} 09:00`, `${OUT} 12:15`, 1, "Scandinavian Airlines"));
+  const sasBack = unpriced(flight("RIX", "ATH", `${BACK} 18:00`, `${BACK} 21:15`, 1, "Scandinavian Airlines"));
+  const pool: FlightPool = {
+    [poolKey("ATH", "RIX", OUT)]: [sasOut, out],
+    [poolKey("RIX", "ATH", BACK)]: [sasBack, back],
+  };
+  for (const sameAirline of [false, true]) {
+    const built = buildArrangements({ ...args, pool, sameAirline });
+    assert.ok(built.length > 0);
+    assert.ok(built.every((a) => a.totals.totalPrice === 441), `sameAirline ${sameAirline}`);
+  }
+  const onlyUnpriced: FlightPool = {
+    [poolKey("ATH", "RIX", OUT)]: [sasOut],
+    [poolKey("RIX", "ATH", BACK)]: [sasBack],
+  };
+  assert.equal(buildArrangements({ ...args, pool: onlyUnpriced }).length, 0);
+});
 
 /** ATH gathers; SKG can fly to London direct, but there is no STN -> SKG. */
 function londonPool(): FlightPool {
@@ -1519,14 +1574,27 @@ check("an exact airport code is suggested first, and airports aren't crowded out
   assert.ok(london.length <= 8);
 });
 
-check("clicking a day extends the date range, or shortens it from inside", () => {
-  const range = { start: "2026-10-10", end: "2026-10-20" };
-  assert.deepEqual(extendRange(null, "2026-10-12"), { start: "2026-10-12", end: "2026-10-12" });
-  assert.deepEqual(extendRange(range, "2026-10-25"), { start: "2026-10-10", end: "2026-10-25" });
-  assert.deepEqual(extendRange(range, "2026-10-05"), { start: "2026-10-05", end: "2026-10-20" });
-  assert.deepEqual(extendRange(range, "2026-10-12"), { start: "2026-10-12", end: "2026-10-20" });
-  assert.deepEqual(extendRange(range, "2026-10-18"), { start: "2026-10-10", end: "2026-10-18" });
-  assert.deepEqual(extendRange(range, "2026-10-15"), { start: "2026-10-10", end: "2026-10-15" });
+check("the range picker sets the start, then the end, like Google Flights", () => {
+  const none: DraftRange = { start: null, end: null };
+  // First click starts the range; the end is next.
+  assert.deepEqual(pickRangeDay(none, "start", "2026-10-10"), { range: { start: "2026-10-10", end: null }, active: "end" });
+  // Picking the end; a day before the start moves the start instead.
+  const started: DraftRange = { start: "2026-10-10", end: null };
+  assert.deepEqual(pickRangeDay(started, "end", "2026-10-20").range, { start: "2026-10-10", end: "2026-10-20" });
+  assert.deepEqual(pickRangeDay(started, "end", "2026-10-05").range, { start: "2026-10-05", end: null });
+  const range: DraftRange = { start: "2026-10-10", end: "2026-10-20" };
+  assert.deepEqual(pickRangeDay(range, "end", "2026-10-15"), { range: { start: "2026-10-10", end: "2026-10-15" }, active: "end" });
+  assert.deepEqual(pickRangeDay(range, "end", "2026-10-10").range, { start: "2026-10-10", end: "2026-10-10" });
+  // A new start keeps the range's length.
+  assert.deepEqual(pickRangeDay(range, "start", "2026-11-01"), { range: { start: "2026-11-01", end: "2026-11-11" }, active: "end" });
+  // Arrows: the start moves both, the end only itself, within bounds.
+  assert.deepEqual(shiftRangeField(range, "start", 1, "2026-10-01"), { start: "2026-10-11", end: "2026-10-21" });
+  assert.deepEqual(shiftRangeField(range, "start", -10, "2026-10-01"), range, "not before the earliest day");
+  assert.deepEqual(shiftRangeField(range, "end", -1, "2026-10-01"), { start: "2026-10-10", end: "2026-10-19" });
+  assert.deepEqual(shiftRangeField({ start: "2026-10-10", end: "2026-10-10" }, "end", -1, "2026-10-01"), {
+    start: "2026-10-10",
+    end: "2026-10-10",
+  });
 });
 
 console.log(`\n${passed} checks passed.`);

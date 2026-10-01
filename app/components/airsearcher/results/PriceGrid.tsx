@@ -31,7 +31,7 @@ function DateHeading({ iso }: { iso: string }) {
 }
 
 /** "14 Sep → 17 Sep · 3 nights". */
-export function describePair(pair: DatePair, nights: number): string {
+export function describePair(pair: { departureDate: string; returnDate: string }, nights: number): string {
   const short = (iso: string) =>
     parseIsoDate(iso)?.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) ?? iso;
   return `${short(pair.departureDate)} → ${short(pair.returnDate)} · ${nights} night${

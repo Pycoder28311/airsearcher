@@ -14,16 +14,15 @@ import { costOf, describeCost } from "@/lib/airsearcher/quota";
 import {
   addDays,
   daysBetween,
-  extendRange,
   formatDate,
   isoDate,
-  parseIsoDate,
+  type DraftRange,
+  type RangeField,
 } from "@/lib/airsearcher/time";
 import type { SearchQuery } from "@/lib/airsearcher/types";
 import Dialog from "../common/Dialog";
 import Stepper from "../common/Stepper";
-import type { DayState } from "./DayCell";
-import MonthGrid from "./MonthGrid";
+import RangePicker from "./RangePicker";
 
 /** What a click on a day does. */
 type PaintMode = "range" | "exclude" | "prioritise";
@@ -61,7 +60,17 @@ export default function AdvancedCalendarModal({
   const today = isoDate(new Date());
 
   const [mode, setMode] = useState<PaintMode>("range");
-  const [range, setRange] = useState(query.dateRange);
+  const [draftRange, setDraftRange] = useState<DraftRange>({
+    start: query.dateRange?.start ?? null,
+    end: query.dateRange?.end ?? null,
+  });
+  // As in Google Flights, the picker opens on the start.
+  const [active, setActive] = useState<RangeField>("start");
+  /** The range once both ends are chosen. */
+  const range = useMemo(
+    () => (draftRange.start && draftRange.end ? { start: draftRange.start, end: draftRange.end } : null),
+    [draftRange],
+  );
   const [duration, setDuration] = useState(query.tripDurationDays ?? 7);
   /** Whether the trip length is left open; the range survives unticking. */
   const [flexible, setFlexible] = useState(Boolean(query.tripLengthRange));
@@ -73,7 +82,6 @@ export default function AdvancedCalendarModal({
   const [priority, setPriority] = useState<Record<string, number>>(query.priorityDates);
   /** Set while the pointer is down, so a drag can paint several days. */
   const [painting, setPainting] = useState(false);
-  const [monthOffset, setMonthOffset] = useState(0);
 
   useEffect(() => {
     if (!painting) return;
@@ -119,34 +127,6 @@ export default function AdvancedCalendarModal({
         return next;
       });
     }
-  };
-
-  const clickDay = (iso: string) => {
-    if (mode === "range") {
-      setRange((current) => extendRange(current, iso));
-      return;
-    }
-    setPainting(true);
-    paint(iso);
-  };
-
-  const enterDay = (iso: string) => {
-    if (painting && mode !== "range") paint(iso);
-  };
-
-  const stateOf = (iso: string): DayState => ({
-    disabled: iso < today,
-    inRange: range !== null && iso >= range.start && iso <= range.end,
-    isEndpoint: range !== null && (iso === range.start || iso === range.end),
-    excluded: excluded.includes(iso),
-    priority: priority[iso] ?? 0,
-    isToday: iso === today,
-  });
-
-  const base = parseIsoDate(range?.start ?? today) ?? new Date();
-  const monthOf = (offset: number) => {
-    const date = new Date(base.getFullYear(), base.getMonth() + monthOffset + offset, 1);
-    return { year: date.getFullYear(), month: date.getMonth() };
   };
 
   return (
@@ -254,40 +234,32 @@ export default function AdvancedCalendarModal({
 
         </div>
 
-        <div className="flex items-center justify-between gap-2">
-          <Button styleType="tertiary" onClick={() => setMonthOffset((m) => m - 1)}>
-            <Text icon="arrow-left" size="small" />
-            <span className="sr-only">Previous month</span>
-          </Button>
-          <Text
-            size="very small"
-            value={
-              range ? `${formatDate(range.start)} – ${formatDate(range.end)}` : "No range chosen"
-            }
-            className="text-gray-600"
-          />
-          <Button styleType="tertiary" onClick={() => setMonthOffset((m) => m + 1)}>
-            <Text icon="arrow-right" size="small" />
-            <span className="sr-only">Next month</span>
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          {[0, 1].map((offset) => {
-            const { year, month } = monthOf(offset);
-            return (
-              <div key={offset} className={offset === 1 ? "hidden sm:block" : ""}>
-                <MonthGrid
-                  year={year}
-                  month={month}
-                  stateOf={stateOf}
-                  onDayClick={clickDay}
-                  onDayEnter={enterDay}
-                />
-              </div>
-            );
-          })}
-        </div>
+        <RangePicker
+          range={draftRange}
+          onRangeChange={setDraftRange}
+          active={active}
+          onActiveChange={setActive}
+          labels={{ start: "First departure day", end: "Last departure day" }}
+          today={today}
+          extraState={(iso) => ({ excluded: excluded.includes(iso), priority: priority[iso] ?? 0 })}
+          paint={
+            mode === "range"
+              ? null
+              : {
+                  onClick: (iso) => {
+                    setPainting(true);
+                    paint(iso);
+                  },
+                  onEnter: (iso) => {
+                    if (painting) paint(iso);
+                  },
+                }
+          }
+          onReset={() => {
+            setDraftRange({ start: null, end: null });
+            setActive("start");
+          }}
+        />
 
         {excluded.length > 0 && (
           <div className="flex flex-col gap-2">
@@ -340,19 +312,17 @@ export default function AdvancedCalendarModal({
 
         {/* Quick range on the left, what a click on a day does on the right. */}
         <div className="flex flex-wrap items-end gap-3">
-          <div className={`flex flex-1 flex-wrap items-center gap-3 ${radius} border ${grayMid.border} p-3`}>
+          <div className={`flex flex-1 basis-full flex-wrap items-center gap-3 sm:basis-auto ${radius} border ${grayMid.border} p-3`}>
             <Text size="very small" value="Quick range" className="text-gray-500" />
             <Button
               styleType="tertiary"
-              onClick={() => setRange({ start: today, end: addDays(today, 29) })}
+              onClick={() => setDraftRange({ start: today, end: addDays(today, 29) })}
             >
               <Text size="very small" value="Next 30 days" />
             </Button>
             <Button
               styleType="tertiary"
-              onClick={() =>
-                setRange({ start: addDays(today, 30), end: addDays(today, 59) })
-              }
+              onClick={() => setDraftRange({ start: addDays(today, 30), end: addDays(today, 59) })}
             >
               <Text size="very small" value="The month after" />
             </Button>

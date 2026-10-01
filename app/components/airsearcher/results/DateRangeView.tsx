@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
-import { buildPriceGrid, type DatePair, type StoredPriceGrid } from "@/lib/airsearcher/priceGrid";
+import { buildPriceGrid, buildPriceLine, type DatePair, type StoredPriceGrid } from "@/lib/airsearcher/priceGrid";
+import PriceLine from "./PriceLine";
 import { candidateDates, flexibleTripLength } from "@/lib/airsearcher/queryPlan";
 import type { Arrangement, SearchQuery } from "@/lib/airsearcher/types";
 import CityChoice from "../common/CityChoice";
@@ -27,6 +28,7 @@ export default function DateRangeView({
   floor,
   selectedPair,
   onSelectPair,
+  info,
 }: {
   query: SearchQuery;
   /** What the filters let through. */
@@ -37,8 +39,12 @@ export default function DateRangeView({
   floor: StoredPriceGrid | undefined;
   selectedPair: DatePair | null;
   onSelectPair: (pair: DatePair | null) => void;
+  /** What "Show info" shows, in place of the grid or chart; absent hides the button. */
+  info?: ReactNode;
 }) {
-  const [view, setView] = useState<"grid" | "chart">("grid");
+  const openLength = flexibleTripLength(query) !== null;
+  // An open length starts on its grid; a fixed one on the per-day chart, its row a click away.
+  const [view, setView] = useState<"grid" | "chart" | "info">(openLength ? "grid" : "chart");
   const [city, setCity] = useState<string | null>(null);
 
   // The cities with results, in the order they first appear.
@@ -53,7 +59,6 @@ export default function DateRangeView({
     return { arrangements: pick(arrangements), stored: pick(stored) };
   }, [activeCity, arrangements, stored]);
 
-  const openLength = flexibleTripLength(query) !== null;
   const grid = useMemo(
     () =>
       openLength
@@ -67,12 +72,25 @@ export default function DateRangeView({
     [openLength, query, inCity, floor, activeCity],
   );
 
+  // A fixed length has one return per day: its grid is a single row, the cheapest per departure day.
+  const line = useMemo(
+    () =>
+      openLength
+        ? null
+        : buildPriceLine(
+            query,
+            inCity.arrangements,
+            floor && activeCity === null ? { floor, stored: inCity.stored } : undefined,
+          ),
+    [openLength, query, inCity, floor, activeCity],
+  );
+
   const chart = <CostPerDayChart dates={candidateDates(query)} arrangements={inCity.arrangements} />;
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        {grid && (
+        {(grid || line || info) && (
           <>
             <Button styleType={view === "grid" ? "primary" : "tertiary"} onClick={() => setView("grid")}>
               Date grid
@@ -80,6 +98,11 @@ export default function DateRangeView({
             <Button styleType={view === "chart" ? "primary" : "tertiary"} onClick={() => setView("chart")}>
               Per-day chart
             </Button>
+            {info && (
+              <Button styleType={view === "info" ? "primary" : "tertiary"} onClick={() => setView("info")}>
+                Show info
+              </Button>
+            )}
           </>
         )}
         {cities.length > 1 && (
@@ -89,10 +112,14 @@ export default function DateRangeView({
           </div>
         )}
       </div>
-      {!grid ? (
+      {view === "info" && info ? (
+        info
+      ) : view === "chart" ? (
         chart
-      ) : view === "grid" ? (
+      ) : grid ? (
         <PriceGrid grid={grid} selected={selectedPair} onSelect={onSelectPair} />
+      ) : line ? (
+        <PriceLine line={line} selected={selectedPair} onSelect={onSelectPair} />
       ) : (
         chart
       )}

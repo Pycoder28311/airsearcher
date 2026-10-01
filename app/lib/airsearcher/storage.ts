@@ -405,8 +405,12 @@ function earliestUpcomingDeparture(entry: StoredSearch, now: number): string | n
  * has already left.
  */
 export function freshnessLimitMs(entry: StoredSearch, now: number = Date.now()): number {
-  const departure = earliestUpcomingDeparture(entry, now);
-  if (!departure) return 0;
+  return limitForDeparture(earliestUpcomingDeparture(entry, now), now);
+}
+
+/** The freshness limit for flights leaving on `departure`; 0 once that day has passed. */
+export function limitForDeparture(departure: string | null, now: number = Date.now()): number {
+  if (!departure || departure < isoDate(new Date(now))) return 0;
   const daysAhead = daysBetween(isoDate(new Date(now)), departure);
   const row = RESULT_FRESHNESS_BY_DAYS_AHEAD.find((r) => daysAhead >= r.daysAhead);
   return row?.maxAgeMs ?? 0;

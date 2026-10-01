@@ -29,6 +29,7 @@ const THEMES = [
 const NAV_LINKS = [
   { href: "/info", label: "Info" },
   { href: "/#history", label: "History" },
+  { href: "/saved", label: "Saved" },
 ];
 
 export default function Navbar() {

@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Text from "@/framework/ui/iconText/Text";
 import { grayMid } from "@/config/theme";
 import { journeyArrival, journeyDeparture } from "@/lib/airsearcher/grouping";
@@ -40,7 +41,14 @@ function DateWithHours({ date, hours }: { date: string; hours: string | null }) 
  * to card: the trip's dates side by side, each with the hours from the day's
  * earliest flight to its latest, and the result's price range top right.
  */
-export default function ResultDateHeader({ arrangement }: { arrangement: Arrangement }) {
+export default function ResultDateHeader({
+  arrangement,
+  beforePrice,
+}: {
+  arrangement: Arrangement;
+  /** Shown just left of the price, such as the save button. */
+  beforePrice?: ReactNode;
+}) {
   const outbound = arrangement.legs.map((leg) => leg.outbound);
   const back = arrangement.legs.flatMap((leg) => (leg.return ? [leg.return] : []));
 
@@ -48,11 +56,14 @@ export default function ResultDateHeader({ arrangement }: { arrangement: Arrange
     <div className={`flex flex-wrap items-baseline gap-x-8 gap-y-1 border-b ${grayMid.border} pb-2`}>
       <DateWithHours date={arrangement.departureDate} hours={hoursOf(outbound)} />
       {arrangement.returnDate && <DateWithHours date={arrangement.returnDate} hours={hoursOf(back)} />}
-      <Text
-        size="small"
-        value={priceRangeOf(arrangement)}
-        className={`ml-auto whitespace-nowrap font-semibold tabular-nums ${PRICE_TEXT}`}
-      />
+      <div className="ml-auto flex items-center gap-2 self-center">
+        {beforePrice}
+        <Text
+          size="small"
+          value={priceRangeOf(arrangement)}
+          className={`whitespace-nowrap font-semibold tabular-nums ${PRICE_TEXT}`}
+        />
+      </div>
     </div>
   );
 }

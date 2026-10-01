@@ -9,8 +9,10 @@
 export const SEARCHES_KEY = "airsearcher:searches:v1";
 export const FILTERS_KEY = "airsearcher:filters:v1";
 export const PREFS_KEY = "airsearcher:prefs:v1";
+/** The results saved with a result card's save icon (see `savedResults.ts`). */
+export const SAVED_RESULTS_KEY = "airsearcher:saved-results:v1";
 
-export const STORAGE_KEYS = [SEARCHES_KEY, FILTERS_KEY, PREFS_KEY] as const;
+export const STORAGE_KEYS = [SEARCHES_KEY, FILTERS_KEY, PREFS_KEY, SAVED_RESULTS_KEY] as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[number];
 

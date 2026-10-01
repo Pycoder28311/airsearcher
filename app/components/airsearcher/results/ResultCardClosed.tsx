@@ -192,6 +192,7 @@ function DirectionSummary({
   date,
   large,
   price,
+  beforePrice,
   place,
 }: {
   label: string;
@@ -202,6 +203,8 @@ function DirectionSummary({
   large: boolean;
   /** The result's price range, at the end of the row; only the DEP row has it. */
   price?: string;
+  /** Shown just left of the price, such as the save button. */
+  beforePrice?: React.ReactNode;
   /** "to Venice" / "from Florence": named only on an open jaw, where the cities differ. */
   place?: string;
 }) {
@@ -260,11 +263,14 @@ function DirectionSummary({
           className="min-w-0 truncate text-gray-500"
         />
         {price && (
-          <Text
-            size={large ? "medium" : "small"}
-            value={price}
-            className={`ml-auto shrink-0 whitespace-nowrap font-semibold tabular-nums ${PRICE_TEXT}`}
-          />
+          <div className="ml-auto flex shrink-0 items-center gap-2 self-center">
+            {beforePrice}
+            <Text
+              size={large ? "medium" : "small"}
+              value={price}
+              className={`whitespace-nowrap font-semibold tabular-nums ${PRICE_TEXT}`}
+            />
+          </div>
         )}
       </div>
 
@@ -284,10 +290,13 @@ function DirectionSummary({
 export default function ResultCardClosed({
   arrangement,
   largeHeaders = false,
+  beforePrice,
 }: {
   arrangement: Arrangement;
   /** Exact-date searches: bigger DEP / RET headers, since there is no date header above. */
   largeHeaders?: boolean;
+  /** Shown just left of the price where this card shows it (exact dates). */
+  beforePrice?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -301,6 +310,7 @@ export default function ResultCardClosed({
           large={largeHeaders}
           // Date-range searches show it in the date header above instead.
           price={largeHeaders ? priceRangeOf(arrangement) : undefined}
+          beforePrice={beforePrice}
           place={arrangement.returnDestination ? `to ${cityName(arrangement.destination.cityId)}` : undefined}
         />
         <DirectionSummary

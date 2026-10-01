@@ -63,7 +63,9 @@ export default function DepartureDropdown({
       {...modal.triggerProps}
       styleType="tertiary"
       onClick={() => modal.toggle({ component: panel, ...POSITION })}
-      className="h-14 w-full justify-between! gap-3"
+      // Dressed like the destination search box beside it: white, bordered, with its larger shadow and its
+      // radiusBig corners, written out with `!` (Tailwind can't see one appended to a token) to beat the button's own.
+      className={`h-14 w-full justify-between! gap-3 bg-white! px-5! border border-gray-300 rounded-2xl! shadow-md hover:border-gray-400`}
     >
       <span className="flex min-w-0 flex-col items-start">
         <Text size="very small" value="Departing from" className="text-gray-500" />

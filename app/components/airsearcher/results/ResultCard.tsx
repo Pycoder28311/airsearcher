@@ -25,6 +25,9 @@ export default function ResultCard({
   onToggle,
   onFloat,
   onUnfloat,
+  saved = false,
+  onSave,
+  notice,
 }: {
   arrangement: Arrangement;
   cheapestPrice: number;
@@ -35,10 +38,17 @@ export default function ResultCard({
   /** Date-range searches only: the trip's dates and bounding hours on top. */
   showDateHeader?: boolean;
   onToggle: () => void;
-  onFloat: () => void;
-  onUnfloat: () => void;
+  /** Absent where a result can't float, as on the Saved page. */
+  onFloat?: () => void;
+  onUnfloat?: () => void;
+  /** Whether it is on the Saved page's saved list. */
+  saved?: boolean;
+  /** Saves it, or removes it when saved; absent hides the save icon. */
+  onSave?: () => void;
+  /** A line above the card, such as why its prices are outdated. */
+  notice?: React.ReactNode;
 }) {
-  if (floating) {
+  if (floating && onUnfloat) {
     return (
       <article
         className={`flex items-center justify-between gap-3 bg-white ${border} ${radiusBig} p-4 opacity-50`}
@@ -79,15 +89,25 @@ export default function ResultCard({
         className="absolute left-1/2 -translate-x-1/2 font-semibold tabular-nums text-gray-700"
       />
 
-      <Button styleType="tertiary" onClick={onFloat} className="hidden lg:inline-flex">
-        <Text icon="upload" size="small" value="Float" />
-      </Button>
+      {onFloat && (
+        <Button styleType="tertiary" onClick={onFloat} className="hidden lg:inline-flex">
+          <Text icon="upload" size="small" value="Float" />
+        </Button>
+      )}
     </div>
+  );
+
+  // Top right, just left of the price: in the date header, or on the DEP row.
+  const saveButton = onSave && (
+    <Button styleType={saved ? "secondary" : "tertiary"} onClick={onSave} className="px-2! py-1!">
+      <Text icon="star" size="very small" value={saved ? "Saved" : "Save"} />
+    </Button>
   );
 
   return (
     <article className={`flex flex-col gap-2 bg-white ${border} ${radiusBig} ${shadow} px-4 py-2`}>
-      {showDateHeader && <ResultDateHeader arrangement={arrangement} />}
+      {notice}
+      {showDateHeader && <ResultDateHeader arrangement={arrangement} beforePrice={saveButton} />}
 
       {open ? (
         <ResultCardOpen
@@ -96,10 +116,15 @@ export default function ResultCard({
           compareWith={compareWith}
           controls={controls}
           largeHeaders={!showDateHeader}
+          beforePrice={showDateHeader ? undefined : saveButton}
         />
       ) : (
         <>
-          <ResultCardClosed arrangement={arrangement} largeHeaders={!showDateHeader} />
+          <ResultCardClosed
+            arrangement={arrangement}
+            largeHeaders={!showDateHeader}
+            beforePrice={showDateHeader ? undefined : saveButton}
+          />
           {controls}
         </>
       )}

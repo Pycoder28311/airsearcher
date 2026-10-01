@@ -419,9 +419,13 @@ export const OPTIONS_PER_HOP = 5;
 /** Most arrangements kept per routing, per destination airport and date — cheapest first. */
 export const ARRANGEMENTS_PER_ROUTING = 10;
 
-/** The cheapest few distinct flights of a route; empty when the route has none. */
+/**
+ * The cheapest few distinct flights of a route; empty when the route has none.
+ * A flight without a price never makes a result: its trip would count it as
+ * free, show 0 €, and pass for the cheapest of its dates.
+ */
 function topFlights(list: NormalizedFlight[] | undefined): NormalizedFlight[] {
-  return uniqueFlights(list ?? []).slice(0, OPTIONS_PER_HOP);
+  return uniqueFlights((list ?? []).filter((flight) => flight.price !== null)).slice(0, OPTIONS_PER_HOP);
 }
 
 /** FNV-1a, so an arrangement id can name its flights without growing unbounded. */

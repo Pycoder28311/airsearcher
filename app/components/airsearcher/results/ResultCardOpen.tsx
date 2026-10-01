@@ -18,6 +18,7 @@ export default function ResultCardOpen({
   compareWith,
   controls,
   largeHeaders = false,
+  beforePrice,
 }: {
   arrangement: Arrangement;
   cheapestPrice: number;
@@ -30,10 +31,12 @@ export default function ResultCardOpen({
   controls?: ReactNode;
   /** Exact-date searches: bigger DEP / RET headers. */
   largeHeaders?: boolean;
+  /** Shown just left of the price (exact dates), such as the save button. */
+  beforePrice?: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <ResultCardClosed arrangement={arrangement} largeHeaders={largeHeaders} />
+      <ResultCardClosed arrangement={arrangement} largeHeaders={largeHeaders} beforePrice={beforePrice} />
 
       {controls}
 

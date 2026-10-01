@@ -81,6 +81,14 @@ export default function CurlRequestSummary({
       />
 
       {requests && (
+        <Text
+          size="very small"
+          value="Flights with no price are ones with stops that Google lists at the end of its “Best match” order. They are left out of the results, and while they are fewer than 35% of a request's flights they don't change them."
+          className="mt-1 block text-gray-500"
+        />
+      )}
+
+      {requests && (
         <ol className={`mt-2 grid grid-cols-[1fr_auto_auto] gap-x-4 border-t ${grayMid.border} pt-2`}>
           <li className="contents">
             <Text size="very small" value="Request" className="text-gray-400" />
@@ -94,13 +102,11 @@ export default function CurlRequestSummary({
                 {row.notes.map((note) => (
                   <Text key={note} size="very small" value={note} className="block pl-4 text-gray-500" />
                 ))}
+                {/* Under the label, so a long message wraps there instead of stretching the number columns. */}
+                {row.error && <Text size="very small" value={row.error} className={`block pl-4 ${colorRed.text}`} />}
               </div>
               {row.error ? (
-                <Text
-                  size="very small"
-                  value={`failed: ${row.error}`}
-                  className={`col-span-2 py-0.5 text-right ${colorRed.text}`}
-                />
+                <Text size="very small" value="failed" className={`col-span-2 py-0.5 text-right ${colorRed.text}`} />
               ) : (
                 <>
                   <Text size="very small" value={`${row.flights}`} className="py-0.5 text-right tabular-nums text-gray-800" />

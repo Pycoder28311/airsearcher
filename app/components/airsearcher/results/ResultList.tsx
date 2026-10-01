@@ -36,6 +36,8 @@ type RowProps = {
   onToggle: (id: string) => void;
   onFloat: (id: string) => void;
   onUnfloat: (id: string) => void;
+  saved: boolean;
+  onSave: (arrangement: Arrangement) => void;
 };
 
 function sameRow(prev: RowProps, next: RowProps): boolean {
@@ -48,7 +50,9 @@ function sameRow(prev: RowProps, next: RowProps): boolean {
     prev.showDateHeader === next.showDateHeader &&
     prev.onToggle === next.onToggle &&
     prev.onFloat === next.onFloat &&
-    prev.onUnfloat === next.onUnfloat
+    prev.onUnfloat === next.onUnfloat &&
+    prev.saved === next.saved &&
+    prev.onSave === next.onSave
   );
 }
 
@@ -66,6 +70,8 @@ const ResultRow = memo(function ResultRow({
   onToggle,
   onFloat,
   onUnfloat,
+  saved,
+  onSave,
 }: RowProps) {
   return (
     <ResultCard
@@ -78,6 +84,8 @@ const ResultRow = memo(function ResultRow({
       onToggle={() => onToggle(arrangement.id)}
       onFloat={() => onFloat(arrangement.id)}
       onUnfloat={() => onUnfloat(arrangement.id)}
+      saved={saved}
+      onSave={() => onSave(arrangement)}
     />
   );
 }, sameRow);
@@ -102,6 +110,8 @@ function ResultList({
   onToggle,
   onFloat,
   onUnfloat,
+  savedIds,
+  onSave,
 }: {
   arrangements: Arrangement[];
   cheapestPrice: number | null;
@@ -111,6 +121,10 @@ function ResultList({
   onToggle: (id: string) => void;
   onFloat: (id: string) => void;
   onUnfloat: (id: string) => void;
+  /** Ids of the results on the Saved page's saved list. */
+  savedIds: Set<string>;
+  /** Saves a result, or removes it when saved. */
+  onSave: (arrangement: Arrangement) => void;
 }) {
   const [shown, setShown] = useState(RESULTS_BATCH_SIZE);
   // Back to one batch when the list itself changes, set during render so the
@@ -160,6 +174,8 @@ function ResultList({
             onToggle={onToggle}
             onFloat={onFloat}
             onUnfloat={onUnfloat}
+            saved={savedIds.has(arrangement.id)}
+            onSave={onSave}
           />
         );
       })}
