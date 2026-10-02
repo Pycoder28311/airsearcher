@@ -78,7 +78,7 @@ export function useSessionRun(
           delayMs: schedule.delaysMs[index] ?? 0,
           pause: schedule.pauseAt.has(index),
           // Google refusing its own page's request (error 13) is often
-          // passing: try that search once more after a random 40–80 s.
+          // passing: try that search once more after a random 3–6 minutes.
           retryAfterMs: (error) => (error.code === "session_expired" ? retryDelayMs() : null),
         })),
         abort.signal,

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { buildCurlArgs, META_MARKER, splitCurlOutput, withRequestId } from "@/lib/airsearcher/curl/args";
 import { generatedJobsFor, sessionRequestsFor, validateSearch } from "@/lib/airsearcher/curl/generated";
 import { planSchedule, retryDelayMs } from "@/lib/airsearcher/pacing";
+import * as P from "@/lib/airsearcher/config/pacing";
 import { airports, googleFlightsSearchUrl, tfsFor } from "@/lib/airsearcher/curl/googleLink";
 import { createHourlyCap } from "@/lib/airsearcher/curl/server/hourlyCap";
 import { checkResponse, errorForExitCode } from "@/lib/airsearcher/curl/classify";
@@ -478,33 +479,55 @@ async function main() {
     for (const job of jobs) validateSearch(job.search, "2026-09-28");
   });
 
-  await check("a run's waits: 5–12 s gaps, and searches ÷ (5–20) longer pauses of 20–90 s", () => {
+  await check("a run's waits: skewed gaps at the run's tempo, short pauses, and long breaks", () => {
+    const tempos = new Set<number>();
     for (let trial = 0; trial < 500; trial++) {
-      const count = 1 + Math.floor(Math.random() * 60);
+      const count = 1 + Math.floor(Math.random() * 120);
       const plan = planSchedule(count);
+      tempos.add(Math.round(plan.tempo * 10));
       assert.equal(plan.delaysMs.length, count);
       assert.equal(plan.delaysMs[0], 0);
-      assert.ok(plan.divisor >= 5 && plan.divisor <= 20);
-      assert.equal(plan.pauseAt.size, Math.min(count - 1, Math.ceil(count / plan.divisor)));
+      assert.ok(plan.tempo >= P.PACING_TEMPO_MIN && plan.tempo <= P.PACING_TEMPO_MAX);
+      assert.ok(plan.divisor >= P.PACING_PAUSE_DIVISOR_MIN && plan.divisor <= P.PACING_PAUSE_DIVISOR_MAX);
+      // A break after every so many searches: never the first, never more than the shortest interval allows.
+      assert.ok(!plan.breakAt.has(0) && plan.breakAt.size <= Math.floor(count / P.PACING_BREAK_EVERY_MIN));
+      for (const at of plan.breakAt) assert.ok(at >= P.PACING_BREAK_EVERY_MIN && at < count);
       plan.delaysMs.slice(1).forEach((ms, i) => {
-        const [min, max] = plan.pauseAt.has(i + 1) ? [20_000, 90_000] : [5_000, 12_000];
+        const index = i + 1;
+        const [min, max] = plan.breakAt.has(index)
+          ? [P.PACING_BREAK_MIN_MS, P.PACING_BREAK_MAX_MS]
+          : plan.pauseAt.has(index)
+            ? [P.PACING_PAUSE_MIN_MS, P.PACING_PAUSE_MAX_MS]
+            : [P.PACING_GAP_MIN_MS * plan.tempo - 1, P.PACING_GAP_MAX_MS * plan.tempo + 1];
         assert.ok(ms >= min && ms <= max, `wait ${ms} outside ${min}–${max}`);
       });
       assert.ok(!plan.pauseAt.has(0));
     }
-    // 50 searches: between ceil(50/20) = 3 and 50/5 = 10 longer pauses.
-    assert.equal(planSchedule(50, () => 0).pauseAt.size, 10);
-    assert.equal(planSchedule(50, () => 0.9999).pauseAt.size, 3);
+    assert.ok(tempos.size > 1 || P.PACING_TEMPO_MIN === P.PACING_TEMPO_MAX, "runs differ in tempo");
+    // 100 searches: breaks at the shortest interval (all-low draws) or the longest (all-high).
+    // Switched off, there are none at all.
+    const on = P.PACING_BREAKS_ENABLED ? 1 : 0;
+    assert.equal(planSchedule(100, () => 0).breakAt.size, on * (Math.ceil(100 / P.PACING_BREAK_EVERY_MIN) - 1));
+    assert.equal(planSchedule(100, () => 0.9999).breakAt.size, on * (Math.ceil(100 / P.PACING_BREAK_EVERY_MAX) - 1));
     assert.equal(planSchedule(1).pauseAt.size, 0);
+    // The gap is skewed: most normal gaps sit in the shorter half.
+    const gaps = Array.from({ length: 50 }, () => planSchedule(40)).flatMap((plan) =>
+      plan.delaysMs.filter((_, i) => i > 0 && !plan.pauseAt.has(i)).map((ms) => ms / plan.tempo),
+    );
+    // A skew of k puts 0.5^(1/k) of the gaps in the shorter half (half of them at k = 1).
+    const middle = (P.PACING_GAP_MIN_MS + P.PACING_GAP_MAX_MS) / 2;
+    const shortShare = gaps.filter((ms) => ms < middle).length / gaps.length;
+    const expected = 0.5 ** (1 / P.PACING_GAP_SKEW);
+    assert.ok(Math.abs(shortShare - expected) < 0.08, `${shortShare} of gaps short, expected about ${expected}`);
   });
 
-  await check("a refused search is retried after 40–80 s", () => {
+  await check("a refused search is retried after the configured wait", () => {
     for (let trial = 0; trial < 500; trial++) {
       const ms = retryDelayMs();
-      assert.ok(ms >= 40_000 && ms <= 80_000, `retry wait ${ms} outside 40–80 s`);
+      assert.ok(ms >= P.PACING_RETRY_MIN_MS && ms <= P.PACING_RETRY_MAX_MS, `retry wait ${ms} outside the range`);
     }
-    assert.equal(retryDelayMs(() => 0), 40_000);
-    assert.equal(retryDelayMs(() => 0.99999999), 80_000);
+    assert.equal(retryDelayMs(() => 0), P.PACING_RETRY_MIN_MS);
+    assert.equal(retryDelayMs(() => 0.99999999), P.PACING_RETRY_MAX_MS);
   });
 
   await check("a run retries a refused search once and notes it in the warnings", async () => {

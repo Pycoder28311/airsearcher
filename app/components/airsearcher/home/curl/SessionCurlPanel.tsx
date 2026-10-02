@@ -1,5 +1,6 @@
 "use client";
 
+import { pacingConfig } from "@/config/pacingConfig";
 import { useEffect, useRef, useState } from "react";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
@@ -26,8 +27,12 @@ function inputsError(query: SearchQuery): string | null {
   );
 }
 
-const BROWSER_HELP =
-  "Each search the trip needs is opened on Google Flights in a hidden browser on this computer, which clicks “View more flights” and reads the full list. Searches run one at a time, 5–12 s apart, with a few longer pauses of 20–90 s at random; the browser is never signed in to Google."
+const { gap, pause, longBreak, retry } = pacingConfig;
+const BROWSER_HELP = `Each search the trip needs is opened on Google Flights in a hidden browser on this computer, which clicks “View more flights” and reads the full list. Searches run one at a time, slowly and unevenly: ${gap.minSeconds}–${gap.maxSeconds} s apart at a pace that differs per run, with pauses of ${pause.minSeconds}–${pause.maxSeconds} s at random${
+  longBreak.enabled
+    ? ` and a break of ${longBreak.minSeconds}–${longBreak.maxSeconds} s every ${longBreak.everySearchesMin}–${longBreak.everySearchesMax} searches`
+    : ""
+}. A search Google refuses is tried once more after ${retry.minSeconds}–${retry.maxSeconds} s. The browser is never signed in to Google.`;
 
 /** "1:05" — minutes and seconds. */
 function clockOf(ms: number): string {
