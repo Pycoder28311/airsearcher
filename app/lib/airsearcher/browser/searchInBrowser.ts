@@ -13,8 +13,11 @@
  */
 
 import path from "node:path";
-import { chromium, type BrowserContext, type Page, type Response } from "playwright";
+import { chromium, firefox, webkit, type BrowserContext, type Page, type Response } from "playwright";
 import {
+  BROWSER_HEADLESS,
+  BROWSER_LAUNCH,
+  BROWSER_NAME,
   BROWSER_IDLE_CLOSE_MS,
   BROWSER_PAGE_TIMEOUT_MS,
   BROWSER_PROFILE_DIR,
@@ -33,8 +36,12 @@ if (typeof window !== "undefined") {
 
 const globalBrowser = globalThis as typeof globalThis & {
   __airsearcherBrowser?: Promise<BrowserContext>;
+  /** Which browser, mode and profile the open one was started with. */
+  __airsearcherBrowserKey?: string;
   __airsearcherBrowserIdle?: ReturnType<typeof setTimeout>;
 };
+
+const ENGINES = { chromium, firefox, webkit };
 
 function profileDir(): string {
   return path.resolve(process.cwd(), process.env.AIRSEARCH_BROWSER_PROFILE || BROWSER_PROFILE_DIR);
@@ -42,29 +49,46 @@ function profileDir(): string {
 
 async function launch(): Promise<BrowserContext> {
   try {
-    const context = await chromium.launchPersistentContext(profileDir(), {
-      headless: true,
+    const { engine, channel } = BROWSER_LAUNCH[BROWSER_NAME];
+    const context = await ENGINES[engine].launchPersistentContext(profileDir(), {
+      ...(channel ? { channel } : {}),
+      headless: BROWSER_HEADLESS,
       locale: "en-GB",
       viewport: { width: 1280, height: 900 },
     });
     // If it closes on its own (crash, killed), the next search starts a new one.
+    // Only if it's still the current one: a browser closed for another choice leaves its successor be.
     context.on("close", () => {
-      globalBrowser.__airsearcherBrowser = undefined;
+      void globalBrowser.__airsearcherBrowser
+        ?.then((current) => {
+          if (current === context) globalBrowser.__airsearcherBrowser = undefined;
+        })
+        .catch(() => {});
     });
     return context;
   } catch (error) {
     globalBrowser.__airsearcherBrowser = undefined;
-    const missing = error instanceof Error && /Executable doesn't exist|playwright install/i.test(error.message);
+    const missing =
+      error instanceof Error &&
+      /Executable doesn't exist|playwright install|is not found at|Chromium distribution .* is not found/i.test(error.message);
     throw new CurlError(
       missing ? "browser_missing" : "network",
       missing
-        ? "The search browser isn't installed. Run “npx playwright install chromium” in the project folder."
-        : "The search browser couldn't be started.",
+        ? `The search browser (${BROWSER_NAME}) isn't installed. Run “${BROWSER_LAUNCH[BROWSER_NAME].install}” in the project folder, or pick another in app/config/browserConfig.ts.`
+        : `The search browser (${BROWSER_NAME}) couldn't be started.`,
     );
   }
 }
 
 function browser(): Promise<BrowserContext> {
+  // Another browser chosen in the config since this one opened: close it and start the new one.
+  const key = `${BROWSER_NAME}|${BROWSER_HEADLESS}|${profileDir()}`;
+  if (globalBrowser.__airsearcherBrowser && globalBrowser.__airsearcherBrowserKey !== key) {
+    const old = globalBrowser.__airsearcherBrowser;
+    globalBrowser.__airsearcherBrowser = undefined;
+    void old.then((context) => context.close()).catch(() => {});
+  }
+  globalBrowser.__airsearcherBrowserKey = key;
   return (globalBrowser.__airsearcherBrowser ??= launch());
 }
 

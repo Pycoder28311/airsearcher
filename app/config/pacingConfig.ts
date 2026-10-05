@@ -11,13 +11,13 @@
 export const pacingConfig = {
   /** The normal wait before each search, in seconds. */
   gap: {
-    minSeconds: 5,
-    maxSeconds: 12,
+    minSeconds: 2,
+    maxSeconds: 5,
     /**
      * How strongly the wait leans towards the short end: 1 spreads it evenly,
      * higher keeps most waits short with now and then a long one.
      */
-    skew: 1,
+    skew: 1.2,
   },
 
   /**
@@ -32,16 +32,16 @@ export const pacingConfig = {
   /** Short pauses, taking the place of some normal waits. */
   pause: {
     /** How many: one for every N searches, N drawn from this range per run. */
-    everySearchesMin: 5,
-    everySearchesMax: 20,
-    minSeconds: 20,
-    maxSeconds: 90,
+    everySearchesMin: 4,
+    everySearchesMax: 10,
+    minSeconds: 10,
+    maxSeconds: 20,
   },
 
   /** Long breaks, like stepping away from the screen, in seconds. */
   longBreak: {
     /** false leaves them out; the values below then wait unused. */
-    enabled: false,
+    enabled: true,
     /** One after every N searches, N drawn anew from this range each time. */
     everySearchesMin: 15,
     everySearchesMax: 25,
@@ -51,7 +51,7 @@ export const pacingConfig = {
 
   /** When Google refuses a search, it is tried once more after this long, in seconds. */
   retry: {
-    minSeconds: 40,
-    maxSeconds: 80,
+    minSeconds: 60,
+    maxSeconds: 120,
   },
 };

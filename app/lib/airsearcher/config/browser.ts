@@ -7,12 +7,41 @@
  * limit stay in `curl.ts`.
  */
 
+import { browserConfig, type BrowserName } from "@/config/browserConfig";
+
+/** The browser chosen in `app/config/browserConfig.ts`, and whether it runs hidden. */
+export const BROWSER_NAME: BrowserName = browserConfig.browser;
+export const BROWSER_HEADLESS = browserConfig.headless;
+
+/**
+ * How Playwright starts each browser: its engine, the installed browser it
+ * drives (`channel`) when not Playwright's own, and the install command.
+ */
+export const BROWSER_LAUNCH: Record<
+  BrowserName,
+  { engine: "chromium" | "firefox" | "webkit"; channel?: string; install: string }
+> = {
+  chromium: { engine: "chromium", install: "npx playwright install chromium" },
+  firefox: { engine: "firefox", install: "npx playwright install firefox" },
+  webkit: { engine: "webkit", install: "npx playwright install webkit" },
+  chrome: { engine: "chromium", channel: "chrome", install: "sudo dnf install google-chrome-stable" },
+  "chrome-beta": { engine: "chromium", channel: "chrome-beta", install: "sudo dnf install google-chrome-beta" },
+  msedge: {
+    engine: "chromium",
+    channel: "msedge",
+    install: "sudo dnf install microsoft-edge-stable (after adding Microsoft's repository, see app/config/browserConfig.ts)",
+  },
+};
+
 /**
  * The browser's own profile folder — its cookies (e.g. the consent choice),
- * never the user's real browser. Relative to the project folder, unless
- * `AIRSEARCH_BROWSER_PROFILE` says otherwise. Under `data/`, so git ignores it.
+ * never the user's real browser. One per browser: Chromium keeps the folder
+ * it always had, the others get theirs beside it. Relative to the project
+ * folder, unless `AIRSEARCH_BROWSER_PROFILE` says otherwise. Under `data/`,
+ * so git ignores it.
  */
-export const BROWSER_PROFILE_DIR = "data/browser-profile";
+export const BROWSER_PROFILE_DIR =
+  BROWSER_NAME === "chromium" ? "data/browser-profile" : `data/browser-profile-${BROWSER_NAME}`;
 
 /** Longest wait for the search page to load, consent included. */
 export const BROWSER_PAGE_TIMEOUT_MS = 45_000;
