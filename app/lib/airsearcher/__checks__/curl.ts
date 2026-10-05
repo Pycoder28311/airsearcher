@@ -12,6 +12,7 @@ import { buildCurlArgs, META_MARKER, splitCurlOutput, withRequestId } from "@/li
 import { generatedJobsFor, sessionRequestsFor, validateSearch } from "@/lib/airsearcher/curl/generated";
 import { planSchedule, retryDelayMs } from "@/lib/airsearcher/pacing";
 import * as P from "@/lib/airsearcher/config/pacing";
+import { pacingConfig } from "@/config/pacingConfig";
 import { airports, googleFlightsSearchUrl, tfsFor } from "@/lib/airsearcher/curl/googleLink";
 import { createHourlyCap } from "@/lib/airsearcher/curl/server/hourlyCap";
 import { checkResponse, errorForExitCode } from "@/lib/airsearcher/curl/classify";
@@ -570,6 +571,40 @@ async function main() {
     sends = 0;
     await runSequence([{ id: 0, label: "x", send: async () => (sends++, refused) }], new AbortController().signal, () => {});
     assert.equal(sends, 1);
+  });
+
+  await check("with 3 refusals allowed in a row, a search gets two retries before the run stops", async () => {
+    (globalThis as { window?: unknown }).window ??= globalThis;
+    const { runSequence } = await import("@/components/airsearcher/home/curl/curlRunner");
+    const refused = { ok: false as const, error: { code: "session_expired" as const, message: "Google refused this request (error [13,null]).", stopRun: true } };
+    const answered = { ok: true as const, flights: [], currency: "EUR", httpStatus: 200, waitedMs: 0, warnings: [] };
+
+    // Refused twice, fine on the third try: the run goes on, both waits noted.
+    let sends = 0;
+    const worked = await runSequence(
+      [{ id: 0, label: "ATH → CDG", send: async () => (++sends <= 2 ? refused : answered), retryAfterMs: () => 5, maxRetries: 2 }],
+      new AbortController().signal,
+      () => {},
+    );
+    assert.equal(sends, 3);
+    assert.equal(worked.succeeded, 1);
+    assert.equal(worked.stoppedBecause, null);
+    assert.ok(worked.warnings.some((w) => /it worked when retried 0 s and then 0 s later/.test(w)));
+
+    // Refused three times in a row: the run stops there.
+    sends = 0;
+    const failed = await runSequence(
+      [
+        { id: 0, label: "ATH → CDG", send: async () => (sends++, refused), retryAfterMs: () => 5, maxRetries: 2 },
+        { id: 1, label: "CDG → ATH", send: async () => answered },
+      ],
+      new AbortController().signal,
+      () => {},
+    );
+    assert.equal(sends, 3);
+    assert.ok(failed.stoppedBecause);
+    assert.ok(failed.warnings.some((w) => w.includes("failed again")));
+    assert.equal(P.PACING_RETRIES, Math.max(0, pacingConfig.retry.refusalsBeforeStop - 1));
   });
 
   await check("a one-cURL run sends each search once, as the full list", () => {

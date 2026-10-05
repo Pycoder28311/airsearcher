@@ -33,6 +33,9 @@ export const PACING_BREAK_EVERY_MAX = pacingConfig.longBreak.everySearchesMax;
 export const PACING_BREAK_MIN_MS = pacingConfig.longBreak.minSeconds * SECOND;
 export const PACING_BREAK_MAX_MS = pacingConfig.longBreak.maxSeconds * SECOND;
 
+/** How many more tries a refused search gets: refusals allowed in a row, less the first. */
+export const PACING_RETRIES = Math.max(0, Math.floor(pacingConfig.retry.refusalsBeforeStop) - 1);
+
 /** The wait before retrying a search Google refused. */
 export const PACING_RETRY_MIN_MS = pacingConfig.retry.minSeconds * SECOND;
 export const PACING_RETRY_MAX_MS = pacingConfig.retry.maxSeconds * SECOND;

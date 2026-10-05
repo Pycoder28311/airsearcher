@@ -32,7 +32,7 @@ const BROWSER_HELP = `Each search the trip needs is opened on Google Flights in 
   longBreak.enabled
     ? ` and a break of ${longBreak.minSeconds}–${longBreak.maxSeconds} s every ${longBreak.everySearchesMin}–${longBreak.everySearchesMax} searches`
     : ""
-}. A search Google refuses is tried once more after ${retry.minSeconds}–${retry.maxSeconds} s. The browser is never signed in to Google.`;
+}. A search Google refuses is tried again after ${retry.minSeconds}–${retry.maxSeconds} s; the run stops after ${retry.refusalsBeforeStop} refusals of the same search in a row. The browser is never signed in to Google.`;
 
 /** "1:05" — minutes and seconds. */
 function clockOf(ms: number): string {

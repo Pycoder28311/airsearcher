@@ -6,6 +6,7 @@ import { CURL_MAX_PER_RUN } from "@/lib/airsearcher/config/curl";
 import { requestBrowserRun } from "@/lib/airsearcher/browser/api";
 import { sessionRequestsFor, type GeneratedJob } from "@/lib/airsearcher/curl/generated";
 import { planSchedule, retryDelayMs, scheduleTotalMs, type RunSchedule } from "@/lib/airsearcher/pacing";
+import { PACING_RETRIES } from "@/lib/airsearcher/config/pacing";
 import { missingJobs, searchedIds, sentIds, type SearchExtension } from "@/lib/airsearcher/extend";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import type { FlightRecord, SearchQuery } from "@/lib/airsearcher/types";
@@ -78,8 +79,10 @@ export function useSessionRun(
           delayMs: schedule.delaysMs[index] ?? 0,
           pause: schedule.pauseAt.has(index),
           // Google refusing its own page's request (error 13) is often
-          // passing: try that search once more after a random 3–6 minutes.
+          // passing: try that search again after a random wait, as many
+          // times as the pacing config allows before the run stops.
           retryAfterMs: (error) => (error.code === "session_expired" ? retryDelayMs() : null),
+          maxRetries: PACING_RETRIES,
         })),
         abort.signal,
         (id, status) => setStatuses((current) => new Map(current).set(id, status)),

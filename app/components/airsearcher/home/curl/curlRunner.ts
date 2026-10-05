@@ -43,10 +43,12 @@ export interface SequenceJob<Id> {
   /** Whether `delayMs` is one of the run's longer pauses. */
   pause?: boolean;
   /**
-   * Whether a failed job gets one more try: how long to wait first, or null
-   * for no retry. Asked at most once per job.
+   * Whether a failed job gets another try: how long to wait first, or null
+   * for no retry. Asked after each failure, up to `maxRetries` times.
    */
   retryAfterMs?: (error: CurlErrorInfo) => number | null;
+  /** How many more tries a failed job may get; 1 when not set. */
+  maxRetries?: number;
 }
 
 /** "Google refused this request (error [13,null,…])…" → "Google refused it (error 13)". */
@@ -121,12 +123,15 @@ export async function runSequence<Id>(
     let response = await job.send(signal);
     lastFinishedAt = Date.now();
 
-    // One more try after a wait, when the job asks for it. The first failure
-    // is kept in the warnings either way, so the results say it happened.
-    const retryMs = !response.ok && response.error.code !== "aborted" ? job.retryAfterMs?.(response.error) ?? null : null;
-    if (!response.ok && retryMs !== null) {
-      const first = shortReason(response.error);
-      const seconds = Math.round(retryMs / 1000);
+    // More tries after a wait, while the job asks for them and has some
+    // left. The first failure is kept in the warnings either way, so the
+    // results say it happened, with every wait in between.
+    const first = response.ok ? "" : shortReason(response.error);
+    const waits: number[] = [];
+    while (!response.ok && response.error.code !== "aborted" && waits.length < (job.maxRetries ?? 1)) {
+      const retryMs = job.retryAfterMs?.(response.error) ?? null;
+      if (retryMs === null) break;
+      waits.push(Math.round(retryMs / 1000));
       onStatus(job.id, { kind: "pending", expectedStart: Date.now() + retryMs, retry: true });
       if (await waitUnlessStopped(retryMs, signal)) {
         warnings.push(`${job.label}: ${first}; the run was stopped before the retry.`);
@@ -136,12 +141,16 @@ export async function runSequence<Id>(
       onStatus(job.id, { kind: "running" });
       response = await job.send(signal);
       lastFinishedAt = Date.now();
+    }
+    if (waits.length > 0) {
+      // "retried 64 s later", or "retried 64 s and then 90 s later" over several tries.
+      const after = `${waits.join(" s and then ")} s later`;
       warnings.push(
         response.ok
-          ? `${job.label}: ${first}; it worked when retried ${seconds} s later.`
+          ? `${job.label}: ${first}; it worked when retried ${after}.`
           : response.error.code === "aborted"
             ? `${job.label}: ${first}; the run was stopped during the retry.`
-            : `${job.label}: ${first}; retried ${seconds} s later and failed again.`,
+            : `${job.label}: ${first}; retried ${after} and failed again.`,
       );
     }
 

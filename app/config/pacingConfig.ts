@@ -49,8 +49,13 @@ export const pacingConfig = {
     maxSeconds: 40,
   },
 
-  /** When Google refuses a search, it is tried once more after this long, in seconds. */
+  /** When Google refuses a search, it is tried again after this long, in seconds. */
   retry: {
+    /**
+     * Refusals in a row one search may get before the run stops: 3 means the
+     * first try and two more. 1 stops at the first refusal.
+     */
+    refusalsBeforeStop: 3,
     minSeconds: 60,
     maxSeconds: 120,
   },
