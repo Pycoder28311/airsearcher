@@ -1,0 +1,46 @@
+{
+  "manifest_version": 2,
+  "name": "AirSearch collector",
+  "version": "1.0",
+  "description": "Copies the Google Flights answers your own browser receives to the AirSearch app on this computer. Makes no requests to Google.",
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "*://*/_/FlightsFrontendUi/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js",
+      "opener.js"
+    ]
+  },
+  "browser_action": {
+    "default_title": "AirSearch collector"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "airsearch-collector@localhost"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost/*"
+      ],
+      "js": [
+        "opener-relay.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.google.com/travel/flights/search*"
+      ],
+      "js": [
+        "view-more.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

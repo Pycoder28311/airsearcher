@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "launch": "node scripts/airsearcher/launch.mjs",
     "start": "next start",
     "build": "prisma generate && next build",
     "git-push": "git add . && git commit -m \"auto commit\" && git push origin main",

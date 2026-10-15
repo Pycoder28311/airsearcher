@@ -4,14 +4,17 @@ import { pacingConfig } from "@/config/pacingConfig";
 import { useEffect, useRef, useState } from "react";
 import Button from "@/framework/ui/buttons/Button";
 import Text from "@/framework/ui/iconText/Text";
+import Input from "@/framework/ui/input/Input";
 import { useApp } from "@/framework/ui/context/AppContext";
-import { colorSecondary, grayLight, grayMid, radius } from "@/config/theme";
+import { colorMain, colorSecondary, grayLight, grayMid, radius } from "@/config/theme";
 import { CURL_MAX_PER_RUN } from "@/lib/airsearcher/config/curl";
+import { airports, googleFlightsSearchUrl } from "@/lib/airsearcher/curl/googleLink";
 import type { StoredSearch } from "@/lib/airsearcher/storage";
 import { destinationsOf, type SearchQuery } from "@/lib/airsearcher/types";
 import InfoHint from "../../common/InfoHint";
 import { dateError } from "../DateField";
 import { RunStatus } from "./CurlRow";
+import { useCollectRun } from "./useCollectRun";
 import { useSessionRun } from "./useSessionRun";
 import type { SearchExtension } from "@/lib/airsearcher/extend";
 
@@ -33,6 +36,9 @@ const BROWSER_HELP = `Each search the trip needs is opened on Google Flights in 
     ? ` and a break of ${longBreak.minSeconds}–${longBreak.maxSeconds} s every ${longBreak.everySearchesMin}–${longBreak.everySearchesMax} searches`
     : ""
 }. A search Google refuses is tried again after ${retry.minSeconds}–${retry.maxSeconds} s; the run stops after ${retry.refusalsBeforeStop} refusals of the same search in a row. The browser is never signed in to Google.`;
+
+const COLLECT_HELP =
+  "Nothing is sent to Google by the app. The collector extension in your own browser opens each search in a tab, passes Google's answer to the app and closes the tab. By default it takes Google's first page and clicks nothing; with “Click View more flights in each tab” ticked it clicks that button and takes the full list. Without the extension, open each row's link (the arrow) yourself and click “View more flights”. Load the extension with npm run launch (see scripts/airsearcher/collector-extension/README.md).";
 
 /** "1:05" — minutes and seconds. */
 function clockOf(ms: number): string {
@@ -110,7 +116,14 @@ export default function SessionCurlPanel({
   /** Set when this run adds dates to a saved search. */
   extension?: SearchExtension;
 }) {
-  const session = useSessionRun(query, onFinished, extension);
+  // Two ways to get each search's flights: the app's hidden browser asks Google,
+  // or the user's own browser opens the search and the app only receives it.
+  const [collectMode, setCollectMode] = useState(false);
+  // Collect mode: click "View more flights" in each tab and use the full list (else the first page, no click).
+  const [fullList, setFullList] = useState(false);
+  const browserRun = useSessionRun(query, onFinished, extension);
+  const collectRun = useCollectRun(query, onFinished, extension, fullList);
+  const session = collectMode ? collectRun : browserRun;
   const { openModal, closeModal } = useApp();
   const listRef = useRef<HTMLUListElement | null>(null);
 
@@ -140,7 +153,7 @@ export default function SessionCurlPanel({
       : null);
 
   const start = () => {
-    if (count <= 1) return void session.run();
+    if (collectMode || count <= 1) return void session.run();
     openModal(
       <div className="flex flex-col gap-4">
         <Text
@@ -190,8 +203,15 @@ export default function SessionCurlPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-1">
-            <Text size="small" value="Google Flights" className="font-medium text-gray-800" />
-            <InfoHint text={BROWSER_HELP} label="How Google Flights is searched" />
+            <Text
+              size="small"
+              value={collectMode ? "Google Flights · from your browser" : "Google Flights"}
+              className="font-medium text-gray-800"
+            />
+            <InfoHint
+              text={collectMode ? COLLECT_HELP : BROWSER_HELP}
+              label={collectMode ? "How the answers are collected" : "How Google Flights is searched"}
+            />
           </div>
           {blocked ? (
             <Text size="very small" value={blocked} className="text-gray-500" />
@@ -199,7 +219,11 @@ export default function SessionCurlPanel({
             count > 0 && (
               <Text
                 size="very small"
-                value={`This trip needs ${count} search${count === 1 ? "" : "es"} (${durationOf(session.totalMs)})`}
+                value={
+                  collectMode
+                    ? `This trip needs ${count} search${count === 1 ? "" : "es"}: open each link, then click “View more flights”`
+                    : `This trip needs ${count} search${count === 1 ? "" : "es"} (${durationOf(session.totalMs)})`
+                }
                 className="text-gray-500"
               />
             )
@@ -207,12 +231,42 @@ export default function SessionCurlPanel({
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-3">
           <Button
+            styleType="tertiary-bordered"
+            disabled={session.running}
+            onClick={() => setCollectMode((current) => !current)}
+          >
+            <Text size="very small" value={collectMode ? "Mode: my browser" : "Mode: hidden browser"} />
+          </Button>
+          {collectMode && (
+            <label
+              className={`flex h-9 items-center gap-2 ${radius} border px-3 select-none ${
+                session.running ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+              } ${fullList ? `${colorMain.border} bg-blue-50 text-blue-700` : "border-gray-300 text-gray-700"}`}
+            >
+              <Input
+                type="checkbox"
+                checked={fullList}
+                disabled={session.running}
+                onChange={() => setFullList((current) => !current)}
+              />
+              <Text size="very small" value="Click “View more flights” in each tab (full list)" />
+            </label>
+          )}
+          <Button
             styleType="primary"
             disabled={session.running || disabled || count === 0 || blocked !== null}
             onClick={start}
             className="h-11 min-w-40 rounded-2xl! px-6!"
           >
-            <Text size="medium" icon="search" value={session.running ? "Searching…" : "Search"} />
+            <Text
+              size="medium"
+              icon="search"
+              value={
+                collectMode
+                  ? session.running ? "Collecting…" : "Start collecting"
+                  : session.running ? "Searching…" : "Search"
+              }
+            />
           </Button>
           {session.running && (
             <Button styleType="secondary" onClick={session.stop} className="h-11 rounded-2xl! px-5!">
@@ -224,13 +278,15 @@ export default function SessionCurlPanel({
 
       {count > 0 && !session.tooMany && (
         <div className="flex flex-col gap-1.5">
-          <RunTime
-            startedAt={session.startedAt}
-            finishedAt={session.finishedAt}
-            running={session.running}
-            totalMs={session.totalMs}
-            pauses={session.pauses}
-          />
+          {!collectMode && (
+            <RunTime
+              startedAt={session.startedAt}
+              finishedAt={session.finishedAt}
+              running={session.running}
+              totalMs={session.totalMs}
+              pauses={session.pauses}
+            />
+          )}
           <ul
             ref={listRef}
             className={`relative flex max-h-72 flex-col gap-0.5 overflow-y-auto border ${grayMid.border} ${radius} bg-white p-1`}
@@ -242,8 +298,50 @@ export default function SessionCurlPanel({
                   key={job.label}
                   className={`flex flex-wrap items-center justify-between gap-2 ${radius} px-2 py-1 transition-colors ${rowTone(status?.kind)}`}
                 >
-                  <Text size="very small" value={job.label} className="text-gray-700" />
-                  {status && status.kind !== "idle" ? (
+                  <div className="flex min-w-0 items-center gap-1">
+                    <Text size="very small" value={job.label} className="text-gray-700" />
+                    <Button
+                      styleType="tertiary"
+                      onClick={() =>
+                        window.open(
+                          googleFlightsSearchUrl({
+                            from: airports(job.search.from),
+                            to: airports(job.search.to),
+                            date: job.search.date,
+                          }),
+                          "_blank",
+                          "noopener,noreferrer",
+                        )
+                      }
+                      className="h-6 w-6 shrink-0 p-0!"
+                    >
+                      <Text icon="external-link" size="very small" />
+                      <span className="sr-only">Open {job.label} in Google Flights</span>
+                    </Button>
+                  </div>
+                  {collectMode && status?.kind === "running" ? (
+                    <div className="flex items-center gap-2">
+                      <Text
+                        size="very small"
+                        icon="clock"
+                        value={
+                          collectRun.firstReceived.has(index)
+                            ? collectRun.viaExtension
+                              ? "First page received · waiting for the full list"
+                              : "First page received · click “View more flights”"
+                            : collectRun.viaExtension
+                              ? "Waiting for the tab…"
+                              : "Waiting for your browser…"
+                        }
+                        className={colorMain.text}
+                      />
+                      {collectRun.firstReceived.has(index) && !collectRun.viaExtension && (
+                        <Button styleType="tertiary" onClick={() => collectRun.acceptFirst(index)}>
+                          <Text size="very small" value="Use first page" />
+                        </Button>
+                      )}
+                    </div>
+                  ) : status && status.kind !== "idle" ? (
                     <RunStatus status={status} />
                   ) : (
                     <Text size="very small" value="—" className="text-gray-400" />
