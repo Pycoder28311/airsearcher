@@ -50,7 +50,7 @@ export function RunStatus({ status }: { status: RowStatus }) {
             seconds <= 0
               ? "Sending…"
               : status.retry
-                ? `Google refused it · retrying in ~${seconds} s`
+                ? `${status.reason ?? "Google refused it"} · retrying in ~${seconds} s`
                 : status.pause
                   ? `Taking a longer pause · ~${seconds} s`
                   : `Waiting ~${seconds} s…`

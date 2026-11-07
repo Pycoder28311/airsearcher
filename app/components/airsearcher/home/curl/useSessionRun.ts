@@ -21,6 +21,15 @@ import { finishRun, runSequence, type RowStatus } from "./curlRunner";
  * With an `extension`, only the searches the saved search lacks are sent, and
  * the new flights are merged into it (see `extend.ts`).
  */
+/**
+ * How long to wait before trying again a search whose page didn't load or
+ * didn't answer in time: a random 10–20 s. These are usually passing (the
+ * browser hiccuped), so it is shorter than the wait after a Google refusal.
+ */
+function pageRetryDelayMs(): number {
+  return 10_000 + Math.round(Math.random() * 10_000);
+}
+
 export function useSessionRun(
   query: SearchQuery,
   onFinished: (entry: StoredSearch) => void,
@@ -80,8 +89,14 @@ export function useSessionRun(
           pause: schedule.pauseAt.has(index),
           // Google refusing its own page's request (error 13) is often
           // passing: try that search again after a random wait, as many
-          // times as the pacing config allows before the run stops.
-          retryAfterMs: (error) => (error.code === "session_expired" ? retryDelayMs() : null),
+          // times as the pacing config allows before the run stops. A page
+          // that didn't load or answer in time gets the same tries, sooner.
+          retryAfterMs: (error) =>
+            error.code === "session_expired"
+              ? retryDelayMs()
+              : error.code === "network" || error.code === "timeout"
+                ? pageRetryDelayMs()
+                : null,
           maxRetries: PACING_RETRIES,
         })),
         abort.signal,

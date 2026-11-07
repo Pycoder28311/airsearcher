@@ -22,8 +22,10 @@ export type RowStatus =
       expectedStart: number;
       /** A longer, planned pause. */
       pause?: boolean;
-      /** Waiting to try again after Google refused the first try. */
+      /** Waiting to try again after the first try failed. */
       retry?: boolean;
+      /** Why it is being tried again, e.g. "Google refused it (error 13)". */
+      reason?: string;
     }
   | { kind: "running" }
   | { kind: "done"; flights: number; warnings: string[] }
@@ -132,7 +134,12 @@ export async function runSequence<Id>(
       const retryMs = job.retryAfterMs?.(response.error) ?? null;
       if (retryMs === null) break;
       waits.push(Math.round(retryMs / 1000));
-      onStatus(job.id, { kind: "pending", expectedStart: Date.now() + retryMs, retry: true });
+      onStatus(job.id, {
+        kind: "pending",
+        expectedStart: Date.now() + retryMs,
+        retry: true,
+        reason: shortReason(response.error),
+      });
       if (await waitUnlessStopped(retryMs, signal)) {
         warnings.push(`${job.label}: ${first}; the run was stopped before the retry.`);
         for (const rest of jobs.slice(position)) onStatus(rest.id, { kind: "skipped", message: "Stopped." });
