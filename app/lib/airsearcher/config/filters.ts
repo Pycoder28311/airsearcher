@@ -184,32 +184,43 @@ const GROUP_SCOPE: Partial<Record<ResettableGroup, ScopableFilter>> = {
 
 const RESETTABLE_GROUPS = Object.keys(GROUP_FIELDS) as ResettableGroup[];
 
-/** Whether a section differs from its defaults, its scope included. */
-export function groupChanged(filters: FilterState, group: ResettableGroup): boolean {
+/**
+ * Whether a section differs from its defaults, its scope included. `defaults`
+ * are the ones the user saved with "Make default"; the built-in ones otherwise.
+ */
+export function groupChanged(
+  filters: FilterState,
+  group: ResettableGroup,
+  defaults: FilterState = DEFAULT_FILTERS,
+): boolean {
   const scope = GROUP_SCOPE[group];
   return (
-    (scope !== undefined && filters.scopes[scope] !== DEFAULT_SCOPES[scope]) ||
+    (scope !== undefined && filters.scopes[scope] !== defaults.scopes[scope]) ||
     GROUP_FIELDS[group].some(
-      (field) => JSON.stringify(filters[field]) !== JSON.stringify(DEFAULT_FILTERS[field]),
+      (field) => JSON.stringify(filters[field]) !== JSON.stringify(defaults[field]),
     )
   );
 }
 
 /** One section back to its defaults, its scope included; everything else stays. */
-export function resetGroup(filters: FilterState, group: ResettableGroup): FilterState {
+export function resetGroup(
+  filters: FilterState,
+  group: ResettableGroup,
+  defaults: FilterState = DEFAULT_FILTERS,
+): FilterState {
   const next: FilterState = { ...filters };
   for (const field of GROUP_FIELDS[group]) {
     // A copy, so later edits never reach the shared defaults.
-    (next as unknown as Record<string, unknown>)[field] = structuredClone(DEFAULT_FILTERS[field]);
+    (next as unknown as Record<string, unknown>)[field] = structuredClone(defaults[field]);
   }
   const scope = GROUP_SCOPE[group];
-  if (scope !== undefined) next.scopes = { ...filters.scopes, [scope]: DEFAULT_SCOPES[scope] };
+  if (scope !== undefined) next.scopes = { ...filters.scopes, [scope]: defaults.scopes[scope] };
   return next;
 }
 
 /** Whether "Reset filters" would change anything: any section off its defaults. */
-export function anyGroupChanged(filters: FilterState): boolean {
-  return RESETTABLE_GROUPS.some((group) => groupChanged(filters, group));
+export function anyGroupChanged(filters: FilterState, defaults: FilterState = DEFAULT_FILTERS): boolean {
+  return RESETTABLE_GROUPS.some((group) => groupChanged(filters, group, defaults));
 }
 
 /**
@@ -217,10 +228,9 @@ export function anyGroupChanged(filters: FilterState): boolean {
  * type — it describes the search itself, not a narrowing of its results, so
  * resetting it would silently change the query.
  */
-export function resetFilters(current: FilterState): FilterState {
+export function resetFilters(current: FilterState, defaults: FilterState = DEFAULT_FILTERS): FilterState {
   return {
-    ...DEFAULT_FILTERS,
+    ...structuredClone(defaults),
     type: current.type,
-    scopes: { ...DEFAULT_SCOPES },
   };
 }

@@ -696,7 +696,7 @@ function ResultsView() {
             value={`${selectedOnly.length} result${selectedOnly.length === 1 ? "" : "s"}`}
             className="tabular-nums text-gray-600"
           />
-          {(anyGroupChanged(filters) || anyCity || nights !== null || viewRange !== null) && (
+          {(anyGroupChanged(filters, preferences.defaultFilters ?? undefined) || anyCity || nights !== null || viewRange !== null) && (
             <Button
               styleType="tertiary"
               onClick={() => {
@@ -704,7 +704,7 @@ function ResultsView() {
                 setLeaveCity(null);
                 void chooseLengths(null);
                 setViewRange(null);
-                updateFilters(resetFilters(filters));
+                updateFilters(resetFilters(filters, preferences.defaultFilters ?? undefined));
               }}
             >
               <Text icon="reset" size="small" value="Reset filters" />
@@ -760,7 +760,7 @@ function ResultsView() {
                 className="text-gray-500"
               />
             ))}
-            <Button styleType="tertiary" onClick={() => updateFilters(resetFilters(filters))}>
+            <Button styleType="tertiary" onClick={() => updateFilters(resetFilters(filters, preferences.defaultFilters ?? undefined))}>
               Reset all filters
             </Button>
           </div>

@@ -6,6 +6,8 @@ import Text from "@/framework/ui/iconText/Text";
 import { border, colorMain, radiusBig } from "@/config/theme";
 import {
   countActiveFilters,
+  DEFAULT_FILTERS,
+  anyGroupChanged,
   groupChanged,
   resetGroup,
   type ResettableGroup,
@@ -95,6 +97,10 @@ export default function FilterSidebar({
   // Return-only controls need a way back: a round-trip search, not shown one way.
   const isRoundTrip = roundTripSearch && filters.type === "round-trip";
   const activeCount = countActiveFilters(filters);
+  // What a reset goes back to: the user's saved default, else the built-in one.
+  const defaults = preferences.defaultFilters ?? DEFAULT_FILTERS;
+  // Whether the filters already are the saved default (the trip type describes the search, so it doesn't count).
+  const isDefault = !anyGroupChanged(filters, defaults);
 
   const counts = useMemo(() => countsFor(arrangements, filters), [arrangements, filters]);
   const airlines = useMemo(() => airlinesIn(arrangements), [arrangements]);
@@ -127,7 +133,7 @@ export default function FilterSidebar({
 
   /** A section's reset, offered only while it differs from its defaults. */
   const reset = (group: ResettableGroup) =>
-    groupChanged(filters, group) ? () => onChange(resetGroup(filters, group)) : undefined;
+    groupChanged(filters, group, defaults) ? () => onChange(resetGroup(filters, group, defaults)) : undefined;
   const curvesChanged =
     JSON.stringify(preferences.ranking.curves) !== JSON.stringify(DEFAULT_RANKING_CONFIG.curves);
 
@@ -173,6 +179,28 @@ export default function FilterSidebar({
               <Text icon="close" size="small" />
               <span className="sr-only">Hide filters</span>
             </Button>
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button
+              styleType="secondary"
+              disabled={isDefault && preferences.defaultFilters !== null}
+              onClick={() => onPreferencesChange({ ...preferences, defaultFilters: structuredClone(filters) })}
+            >
+              <Text
+                icon="check"
+                size="very small"
+                value={isDefault && preferences.defaultFilters !== null ? "Default saved" : "Make default"}
+              />
+            </Button>
+            {preferences.defaultFilters !== null && (
+              <Button
+                styleType="tertiary"
+                onClick={() => onPreferencesChange({ ...preferences, defaultFilters: null })}
+              >
+                <Text size="very small" value="Use original defaults" />
+              </Button>
+            )}
           </div>
 
           <Text

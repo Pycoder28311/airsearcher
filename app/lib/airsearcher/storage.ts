@@ -149,12 +149,18 @@ export interface StoredPreferences {
   dates: DatePreferences;
   /** Whether the results sidebar is collapsed. Presentation only. */
   sidebarCollapsed: boolean;
+  /**
+   * The filters the user saved with "Make default": what the filters start as and
+   * what a reset goes back to. Null while the built-in defaults are in use.
+   */
+  defaultFilters: FilterState | null;
 }
 
 export const DEFAULT_PREFERENCES: StoredPreferences = {
   ranking: DEFAULT_RANKING_CONFIG,
   dates: DEFAULT_DATE_PREFERENCES,
   sidebarCollapsed: false,
+  defaultFilters: null,
 };
 
 /* ── Storage access ──────────────────────────────────────────────────────── */
@@ -462,8 +468,8 @@ export function findFreshByKey(
 
 /* ── Filters ─────────────────────────────────────────────────────────────── */
 
-export function loadFilters(): FilterState {
-  const raw = readJson(FILTERS_KEY);
+/** A saved filters blob made whole: fields from an older version are filled in from the defaults. */
+function normalizeFilters(raw: unknown): FilterState {
   if (typeof raw !== "object" || raw === null) return DEFAULT_FILTERS;
   // Merge over the defaults so a blob from an older version gains new fields
   // instead of leaving them undefined.
@@ -479,6 +485,13 @@ export function loadFilters(): FilterState {
       ? (raw as FilterState).weights
       : DEFAULT_FILTERS.weights,
   };
+}
+
+/** The filters in force: the last ones used, else the user's saved defaults, else the built-in ones. */
+export function loadFilters(): FilterState {
+  const raw = readJson(FILTERS_KEY);
+  if (typeof raw !== "object" || raw === null) return loadPreferences().defaultFilters ?? DEFAULT_FILTERS;
+  return normalizeFilters(raw);
 }
 
 export function saveFilters(next: FilterState): void {
@@ -511,6 +524,10 @@ export function loadPreferences(): StoredPreferences {
           : {},
     },
     sidebarCollapsed: stored.sidebarCollapsed === true,
+    defaultFilters:
+      typeof stored.defaultFilters === "object" && stored.defaultFilters !== null
+        ? normalizeFilters(stored.defaultFilters)
+        : null,
   };
 }
 
