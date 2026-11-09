@@ -22,6 +22,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { backupDb, pullIfBehind } from "./launch-sync.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const extDir = process.env.AIRSEARCH_EXT_DIR || path.join(root, "scripts/airsearcher/collector-extension");
@@ -124,6 +125,18 @@ if (!zenBin || !existsSync(zenBin)) fail("Couldn't find zen.exe. Set ZEN_BIN to 
 if (!existsSync(extDir)) fail(`The extension folder is missing: ${extDir}`);
 if (zenRunning()) {
   fail("Zen is running. Close it completely first (a profile can only be open once), then run this again.");
+}
+
+// Before anything starts: keep a copy of the database, then bring the code up to date.
+await backupDb(root, (line) => console.log(`launch-w: ${line}`));
+const changed = pullIfBehind(root, (line) => console.log(`launch-w: ${line}`));
+if (changed.some((file) => file === "package.json" || file === "package-lock.json")) {
+  console.log("launch-w: packages changed; installing…");
+  // --ignore-scripts: better-sqlite3 ships its Windows binary, so nothing needs compiling.
+  spawnSync([quote("npm"), "install", "--ignore-scripts"].join(" "), { cwd: root, stdio: "inherit", shell: true });
+}
+if (changed.some((file) => file.startsWith("prisma/"))) {
+  spawnSync([quote("npx"), "prisma", "generate"].join(" "), { cwd: root, stdio: "inherit", shell: true });
 }
 
 if (await appUp()) {

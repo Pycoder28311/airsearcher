@@ -14,16 +14,16 @@ if errorlevel 1 (
 
 if not exist node_modules (
   echo First run: installing dependencies...
-  call npm install
+  rem --ignore-scripts: better-sqlite3 ships its Windows binary, nothing needs compiling.
+  call npm install --ignore-scripts
   if errorlevel 1 (
     echo npm install failed.
     pause
     exit /b 1
   )
+  call npx prisma generate
 )
 
-call npm run launch-w
-
-rem Keep the window open if it stopped, so any message can be read.
-echo.
-pause
+rem One line on purpose: the launcher may pull an updated copy of this file while it runs,
+rem and cmd must not read further lines from a file that changed under it.
+call npm run launch-w & echo. & pause & exit /b
