@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "launch": "node scripts/airsearcher/launch.mjs",
+    "launch-w": "node scripts/airsearcher/launch-w.mjs",
     "start": "next start",
     "build": "prisma generate && next build",
     "git-push": "git add . && git commit -m \"auto commit\" && git push origin main",
